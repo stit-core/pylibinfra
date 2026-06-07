@@ -1,0 +1,155 @@
+[project]
+name = "pylibinfra"
+version = "0.1.0"
+description = "Инфраструктурные Python-kit'ы с observability из коробки"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{ name = "sftbmb-core" }]
+keywords = ["infrastructure", "observability", "opentelemetry", "fastapi", "dishka"]
+
+dependencies = [
+    # DI + lifecycle (аналог go.uber.org/fx)
+    "dishka>=1.10,<2",
+    # config (аналог envconfig + struct tags)
+    "pydantic>=2.13,<3",
+    "pydantic-settings>=2.14,<3",
+    # observability (аналог otel-go SDK + contrib)
+    "opentelemetry-api>=1.42,<2",
+    "opentelemetry-sdk>=1.42,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.42,<2",
+    "opentelemetry-instrumentation-fastapi>=0.63b1",
+    "opentelemetry-instrumentation-asgi>=0.63b1",
+    "opentelemetry-instrumentation-httpx>=0.63b1",
+    "opentelemetry-instrumentation-redis>=0.63b1",
+    "opentelemetry-instrumentation-asyncpg>=0.63b1",
+    "opentelemetry-instrumentation-logging>=0.63b1",
+    "opentelemetry-instrumentation-system-metrics>=0.63b1",
+    # web (аналог huma/v2 + chi + net/http)
+    "fastapi>=0.136,<1",
+    "uvicorn[standard]>=0.49,<1",
+    # postgres (аналог pgx/v5 + golang-migrate)
+    "asyncpg>=0.31,<1",
+    "yoyo-migrations>=9,<10",
+    # синхронный драйвер для yoyo-миграций (runtime — asyncpg); схема
+    # postgresql:// подходит обоим, один DSN
+    "psycopg2-binary>=2.9,<3",
+    # messaging (аналог nats.go)
+    "nats-py>=2.15,<3",
+    # cache (аналог go-redis)
+    "redis>=8,<9",
+    # http-клиент (аналог net/http + sony/gobreaker)
+    "httpx>=0.28,<1",
+    "tenacity>=9.1,<10",
+    "purgatory-circuitbreaker>=0.7,<1",
+    # storage (аналог minio-go; S3-generic, MinIO через endpoint_url)
+    "aioboto3>=15.5,<16",
+    # auth (аналог argon2 / golang-jwt / pquerna-otp)
+    "argon2-cffi>=25.1,<26",
+    "pyjwt>=2.13,<3",
+    "pyotp>=2.9,<3",
+    # logging (аналог slog + otelslog bridge)
+    "structlog>=26.1,<27",
+    # secrets (аналог hashicorp/vault/api)
+    "hvac>=2.4,<3",
+    # purgatory (circuit breaker) импортирует pkg_resources на старте;
+    # setuptools ≥81 его уже не поставляет — пиним на линию, где он есть
+    "setuptools>=80,<81",
+]
+
+[project.optional-dependencies]
+# testkit шипится в пакете, но testcontainers/pytest нужны только консьюмерам,
+# которые пишут интеграционные тесты: `uv add "pylibinfra[testkit]"`
+testkit = [
+    "testcontainers>=4.14,<5",
+    "pytest>=9,<10",
+    "pytest-asyncio>=1.4,<2",
+]
+
+[project.urls]
+Homepage = "https://git.sftbmb.ru/sftbmb-core/pylibinfra"
+Showcase = "https://git.sftbmb.ru/sftbmb-core/sftbmb-public"
+
+[dependency-groups]
+dev = [
+    "pytest>=9,<10",
+    "pytest-asyncio>=1.4,<2",
+    "pytest-cov>=7.1,<8",
+    "testcontainers>=4.14,<5",
+    "minio>=7.2",  # клиент для testcontainers MinioContainer (storagekit integration)
+    "ruff>=0.15",
+    "mypy>=2.1,<3",
+    # типовые стабы для mypy
+    "types-aioboto3>=15.5",
+    "types-hvac>=2.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pylibinfra"]
+
+# ── ruff: format + lint (аналог gofumpt + golangci-lint) ──────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "SIM",      # simplify
+    "C4",       # comprehensions
+    "PIE",      # misc lints
+    "PT",       # pytest style
+    "N",        # naming
+    "ASYNC",    # async pitfalls
+    "S",        # bandit (≈ gosec)
+    "TID",      # tidy imports
+    "RUF",      # ruff-specific
+]
+ignore = [
+    "S101",     # assert — допустим вне тестов в защитных проверках
+    # кодовая база русскоязычно-комментирована (как golibinfra); кириллица,
+    # похожая на латиницу (с/е/о), — не ошибка
+    "RUF001", "RUF002", "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "N802", "PLR2004"]  # assert/hardcoded-secret/имена/magic в тестах — ок
+
+[tool.ruff.lint.isort]
+known-first-party = ["pylibinfra"]
+
+# ── mypy: строгая типизация (аналог `go vet` + типобезопасность Go) ───────────
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+plugins = ["pydantic.mypy"]
+
+# ── pytest (аналог `go test`; integration ≈ снятие -short) ────────────────────
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: тесты, поднимающие контейнеры через testkit (снятие -short)",
+]
+addopts = "--strict-markers --import-mode=importlib"
+
+[tool.coverage.run]
+branch = true
+source = ["src/pylibinfra"]
+
+[tool.coverage.report]
+show_missing = true

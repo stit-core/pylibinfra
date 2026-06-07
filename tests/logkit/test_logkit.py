@@ -1,0 +1,49 @@
+import json
+from typing import Any
+
+import pytest
+from opentelemetry.sdk.trace import TracerProvider
+
+from pylibinfra.logkit import Config, RedactConfig, configure, new_logger
+
+
+def _last_record(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
+    lines = capsys.readouterr().err.strip().splitlines()
+    record: dict[str, Any] = json.loads(lines[-1])
+    return record
+
+
+def test_emits_structured_json(capsys: pytest.CaptureFixture[str]) -> None:
+    configure(Config(), redact_cfg=RedactConfig(), use_otel=False)
+    new_logger().info("user login", user_id=42, result="ok")
+    rec = _last_record(capsys)
+    assert rec["message"] == "user login"
+    assert rec["level"] == "info"
+    assert rec["user_id"] == 42
+    assert rec["result"] == "ok"
+
+
+def test_with_binds_fields(capsys: pytest.CaptureFixture[str]) -> None:
+    configure(Config(), redact_cfg=RedactConfig(), use_otel=False)
+    new_logger().with_(request_id="abc").info("hi")
+    rec = _last_record(capsys)
+    assert rec["request_id"] == "abc"
+
+
+def test_redacts_pii(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOG_REDACT_ENABLED", "true")
+    configure(Config(), redact_cfg=RedactConfig(), use_otel=False)
+    new_logger().info("contact", email="john@example.com")
+    rec = _last_record(capsys)
+    assert "[REDACTED]" in rec["email"]
+    assert "john@example.com" not in rec["email"]
+
+
+def test_injects_trace_context(capsys: pytest.CaptureFixture[str]) -> None:
+    configure(Config(), redact_cfg=RedactConfig(), use_otel=False)
+    provider = TracerProvider()
+    with provider.get_tracer("test").start_as_current_span("op"):
+        new_logger().info("traced")
+    rec = _last_record(capsys)
+    assert len(rec["trace_id"]) == 32
+    assert len(rec["span_id"]) == 16
