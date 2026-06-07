@@ -2,9 +2,15 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+from aiogram.types import ErrorEvent
+from aiogram_dialog.api.exceptions import OutdatedIntent, UnknownIntent, UnknownState
+
 from pylibinfra.httpclient import request_id
+from pylibinfra.logkit import nop
 from pylibinfra.tgbotkit.metrics import new_instruments
 from pylibinfra.tgbotkit.middleware.dedup import DedupMiddleware
+from pylibinfra.tgbotkit.middleware.recovery import RecoveryMiddleware
 from pylibinfra.tgbotkit.middleware.request_id import RequestIdMiddleware
 from pylibinfra.tgbotkit.middleware.throttle import ThrottleMiddleware
 
@@ -56,6 +62,47 @@ async def test_throttle_limits_per_user(fake_redis: FakeRedis) -> None:
     assert await mw(handler, update, data) == "handled"
     assert await mw(handler, update, data) is None  # сверх rps=2
     assert len(calls) == 2
+
+
+class _RecordingUX:
+    def __init__(self) -> None:
+        self.unhandled: list[ErrorEvent] = []
+
+    async def on_unknown_intent(self, event: ErrorEvent, bot: Any) -> None: ...
+    async def on_unknown_state(self, event: ErrorEvent, bot: Any) -> None: ...
+    async def on_unhandled(self, event: ErrorEvent, bot: Any) -> None:
+        self.unhandled.append(event)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [UnknownIntent("stale"), OutdatedIntent("s1", "stale"), UnknownState("gone")],
+)
+async def test_recovery_reraises_dialog_stale(exc: Exception) -> None:
+    ux = _RecordingUX()
+    mw = RecoveryMiddleware(ux, new_instruments(), nop())
+
+    async def handler(event: Any, data: dict[str, Any]) -> None:
+        raise exc
+
+    update = SimpleNamespace(event_type="callback_query")
+    with pytest.raises(type(exc)):  # уходит в dp.errors, не в panic-путь
+        await mw(handler, update, {})
+    assert ux.unhandled == []  # generic-panic не сработал
+
+
+async def test_recovery_swallows_generic_exception(
+    read_metric: Callable[[str], float],
+) -> None:
+    ux = _RecordingUX()
+    mw = RecoveryMiddleware(ux, new_instruments(), nop())
+
+    async def handler(event: Any, data: dict[str, Any]) -> None:
+        raise RuntimeError("boom")
+
+    update = SimpleNamespace(event_type="message")
+    assert await mw(handler, update, {}) is None  # проглочен
+    assert read_metric("tg_update_panics_total") == 1
 
 
 async def test_request_id_set_during_handler_and_reset_after() -> None:

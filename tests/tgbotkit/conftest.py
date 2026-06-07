@@ -61,6 +61,9 @@ class FakeRedis:
     async def expire(self, key: str, ttl: int) -> bool:
         return True
 
+    async def delete(self, key: str) -> int:
+        return int(self._store.pop(key, None) is not None)
+
 
 @pytest.fixture
 def fake_redis() -> FakeRedis:

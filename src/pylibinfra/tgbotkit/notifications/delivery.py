@@ -1,8 +1,12 @@
 """Delivery — ЕДИНСТВЕННАЯ безопасная обёртка над BgManager для доставки вне
 апдейта (NATS→Telegram). Закрывает грабли фона (06 bgmanager): load=True (реальные
-Chat/User для AUTO-show-mode), пустой/закрытый стек → тихий промах (не падать),
-EDIT не гарантирован, изоляция request_id под каждую доставку (фон вне middleware).
-Маппинг backend_user_id→(user_id,chat_id) — продуктовый, остаётся в шаблоне.
+Chat/User для AUTO-show-mode), EDIT не гарантирован, изоляция request_id под каждую
+доставку (фон вне middleware). Маппинг backend_user_id→(user_id,chat_id) —
+продуктовый, остаётся в шаблоне.
+
+Сбой доставки ПРОБРАСЫВАЕТСЯ к звонящему (notifier-handler) ради at-least-once:
+исключение доходит до natskit.JsBus._handle_one → msg.nak() → redelivery (там же
+лог сбоя на уровне консьюмера). Здесь — только установка/сброс request_id.
 """
 
 from __future__ import annotations
@@ -37,9 +41,6 @@ class Delivery:
         try:
             bg = self._bg.bg(bot=self._bot, user_id=user_id, chat_id=chat_id, load=load)
             await bg.start(state, data=data, mode=mode)
-        except Exception as exc:
-            # at-least-once-доставка не должна валить consumer'а: лог + проглотить
-            self._log.error("tgbotkit: delivery start_dialog failed", error=repr(exc))
         finally:
             _httpclient_request_id.reset(token)
 
@@ -47,7 +48,5 @@ class Delivery:
         token = _httpclient_request_id.set(f"tg-notify-{chat_id}")
         try:
             await self._bot.send_message(chat_id, text, **kwargs)
-        except Exception as exc:
-            self._log.error("tgbotkit: delivery send_message failed", error=repr(exc))
         finally:
             _httpclient_request_id.reset(token)

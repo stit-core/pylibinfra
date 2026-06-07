@@ -1,7 +1,12 @@
 """RecoveryMiddleware (outer): последний рубеж. Ловит исключения, не обработанные
-dp.errors (UnknownIntent/State обрабатываются там и сюда не доходят), считает
-tg_update_panics_total, логирует и показывает пользователю нейтральное сообщение
-через ErrorUX — и ГЛОТАЕТ: один битый апдейт не должен валить бота.
+dp.errors, считает tg_update_panics_total, логирует и показывает пользователю
+нейтральное сообщение через ErrorUX — и ГЛОТАЕТ: один битый апдейт не должен валить
+бота.
+
+Stale-dialog-исключения aiogram_dialog (UnknownIntent/OutdatedIntent/UnknownState)
+ПРОБРАСЫВАЮТСЯ в dp.errors — там их чинит штатный stack-recovery aiogram_dialog
+(IntentErrorMiddleware._fix_broken_stack) и stale-UX error-handler'ы шаблона; иначе
+юзер с протухшей кнопкой после деплоя залип бы в петле generic-panic до ручного /start.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from typing import Any
 
 from aiogram import BaseMiddleware
 from aiogram.types import ErrorEvent, TelegramObject, Update
+from aiogram_dialog.api.exceptions import OutdatedIntent, UnknownIntent, UnknownState
 
 from pylibinfra.logkit import Logger
 from pylibinfra.tgbotkit.errorux import ErrorUX
@@ -28,6 +34,8 @@ class RecoveryMiddleware(BaseMiddleware):
     async def __call__(self, handler: Handler, event: TelegramObject, data: dict[str, Any]) -> Any:
         try:
             return await handler(event, data)
+        except (UnknownIntent, OutdatedIntent, UnknownState):
+            raise
         except Exception as exc:
             update_type = str(getattr(event, "event_type", "unknown"))
             self._instr.panics_total.add(1, {"type": update_type})

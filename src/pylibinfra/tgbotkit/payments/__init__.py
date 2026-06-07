@@ -3,8 +3,8 @@ charge, XTR-invoice + tg_payments_* метрики. Регистрация dispa
 хендлеров — через CommandBundle; бизнес (policy/usecase/gateway/диалоги) — в шаблоне.
 """
 
-from .guard import guard_charge
+from .guard import ChargeGuard
 from .invoice import build_invoice
 from .precheckout import PreCheckoutDecision, answer_pre_checkout
 
-__all__ = ["PreCheckoutDecision", "answer_pre_checkout", "build_invoice", "guard_charge"]
+__all__ = ["ChargeGuard", "PreCheckoutDecision", "answer_pre_checkout", "build_invoice"]

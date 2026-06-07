@@ -50,7 +50,7 @@ from .notifications import (
     NotificationRouter,
     NotificationRunner,
 )
-from .payments import answer_pre_checkout, build_invoice, guard_charge
+from .payments import ChargeGuard, answer_pre_checkout, build_invoice
 from .runner import BotRunner, PollingRunner, WebhookRunner, build_runner
 from .webapp import InitDataError, validate_init_data
 
@@ -58,6 +58,7 @@ __all__ = [
     "BotProvider",
     "BotRunner",
     "ChainResolver",
+    "ChargeGuard",
     "CommandBundle",
     "CommandSpec",
     "Config",
@@ -88,7 +89,6 @@ __all__ = [
     "build_invoice",
     "build_runner",
     "default_error_ux",
-    "guard_charge",
     "install_i18n",
     "new_config",
     "new_instruments",

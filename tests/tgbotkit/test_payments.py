@@ -2,7 +2,7 @@ import asyncio
 
 from aiogram.types import PreCheckoutQuery, User
 
-from pylibinfra.tgbotkit import answer_pre_checkout, build_invoice, guard_charge
+from pylibinfra.tgbotkit import ChargeGuard, answer_pre_checkout, build_invoice
 
 from .conftest import FakeRedis
 
@@ -77,10 +77,25 @@ async def test_pre_checkout_exception_fails_closed() -> None:
     assert bot.answered[1] is False
 
 
-async def test_guard_charge_dedup(fake_redis: FakeRedis) -> None:
-    assert await guard_charge(fake_redis, "charge-1") is False  # type: ignore[arg-type]
-    assert await guard_charge(fake_redis, "charge-1") is True  # type: ignore[arg-type]
-    assert await guard_charge(fake_redis, "charge-2") is False  # type: ignore[arg-type]
+async def test_charge_guard_reserve_dedup(fake_redis: FakeRedis) -> None:
+    guard = ChargeGuard(fake_redis)  # type: ignore[arg-type]
+    assert await guard.reserve("charge-1") is True  # захвачен
+    assert await guard.reserve("charge-1") is False  # дубль пропущен
+    assert await guard.reserve("charge-2") is True  # другой charge захвачен
+
+
+async def test_charge_guard_release_allows_retry(fake_redis: FakeRedis) -> None:
+    guard = ChargeGuard(fake_redis)  # type: ignore[arg-type]
+    assert await guard.reserve("charge-1") is True
+    await guard.release("charge-1")  # транзиентный сбой fulfill
+    assert await guard.reserve("charge-1") is True  # повтор может выдать снова
+
+
+async def test_charge_guard_commit_blocks_duplicate(fake_redis: FakeRedis) -> None:
+    guard = ChargeGuard(fake_redis)  # type: ignore[arg-type]
+    assert await guard.reserve("charge-1") is True
+    await guard.commit("charge-1")  # выдача успешна → длинное окно
+    assert await guard.reserve("charge-1") is False  # повтор платежа дропнут
 
 
 def test_build_invoice_xtr_drops_provider_token() -> None:
