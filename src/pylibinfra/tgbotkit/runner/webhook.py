@@ -33,7 +33,8 @@ class WebhookRunner(_BaseRunner):
         http_cfg = httpkit.new_config()
         guard = httpkit.shared_secret_guard(
             httpkit.SharedSecretConfig(
-                header="X-Telegram-Bot-Api-Secret-Token", secret=cfg.webhook_secret
+                header="X-Telegram-Bot-Api-Secret-Token",
+                secret=cfg.webhook_secret.get_secret_value(),
             )
         )
         server = httpkit.Server(http_cfg, self._log, probes=(self._probe,))
@@ -45,7 +46,7 @@ class WebhookRunner(_BaseRunner):
         await server.start()
         await self._bot.set_webhook(
             cfg.webhook_base_url.rstrip("/") + cfg.webhook_path,
-            secret_token=cfg.webhook_secret or None,
+            secret_token=cfg.webhook_secret.get_secret_value() or None,
             allowed_updates=self._dp.resolve_used_update_types(),
             drop_pending_updates=cfg.drop_pending_updates,
         )

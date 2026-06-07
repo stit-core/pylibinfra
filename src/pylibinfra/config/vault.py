@@ -1,7 +1,7 @@
 from typing import Any
 
 import hvac
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,7 +9,8 @@ class VaultClientConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
 
     addr: str = Field(default="", validation_alias="VAULT_ADDR")
-    token: str = Field(default="", validation_alias="VAULT_TOKEN")
+    # SecretStr: vault-токен не утекает в repr/model_dump/трейсбек ValidationError
+    token: SecretStr = Field(default=SecretStr(""), validation_alias="VAULT_TOKEN")
     namespace: str = Field(default="", validation_alias="VAULT_NAMESPACE")
 
 
@@ -18,7 +19,7 @@ def new_vault_client(cfg: VaultClientConfig) -> hvac.Client | None:
         return None
     return hvac.Client(
         url=cfg.addr,
-        token=cfg.token or None,
+        token=cfg.token.get_secret_value() or None,
         namespace=cfg.namespace or None,
     )
 

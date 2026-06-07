@@ -76,7 +76,9 @@ class BotProvider(Provider):
 
     @provide
     async def bot(self, cfg: Config) -> AsyncIterator[Bot]:
-        b = Bot(cfg.token, default=DefaultBotProperties(parse_mode=cfg.parse_mode))
+        b = Bot(
+            cfg.token.get_secret_value(), default=DefaultBotProperties(parse_mode=cfg.parse_mode)
+        )
         yield b
         await b.session.close()  # после container.close (lifecycle 06 §5)
 

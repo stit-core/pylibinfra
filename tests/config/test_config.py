@@ -1,7 +1,7 @@
 from typing import Any
 
 import pytest
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pylibinfra.config import VaultClientConfig, VaultSource, load, new_vault_client
@@ -42,6 +42,27 @@ def test_source_error_wrapped() -> None:
 
     with pytest.raises(RuntimeError, match=r"config: source\[0\]"):
         load(_Settings, _Boom())
+
+
+def test_validation_error_does_not_leak_secret() -> None:
+    class _Secrets(BaseSettings):
+        model_config = SettingsConfigDict(extra="ignore")
+
+        tok: SecretStr = Field(default=SecretStr(""))
+        n: int = Field(default=0)
+
+    class _Bad:
+        def apply(self, dst: dict[str, Any]) -> None:
+            # невалидный тип для секретного поля → input_value утёк бы в трейсбек
+            dst.update({"tok": ["super-secret-token"], "n": "not-an-int"})
+
+    with pytest.raises(RuntimeError) as exc_info:
+        load(_Secrets, _Bad())
+    msg = str(exc_info.value)
+    assert "super-secret-token" not in msg
+    assert "not-an-int" not in msg
+    assert "tok" in msg
+    assert "n" in msg
 
 
 def test_new_vault_client_none_when_no_addr() -> None:

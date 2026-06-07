@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import pytest
@@ -41,9 +41,25 @@ def read_metric(metric_reader: InMemoryMetricReader) -> Callable[[str], float]:
     return lambda name: metric_value(metric_reader, name)
 
 
+class _FakeScript:
+    """Стаб AsyncScript: моделирует throttle-Lua (INCR + EXPIRE на первом инкременте)
+    как одну атомарную операцию над in-memory store."""
+
+    def __init__(self, store: dict[str, Any]) -> None:
+        self._store = store
+
+    async def __call__(
+        self, keys: Sequence[str] | None = None, args: Sequence[Any] | None = None
+    ) -> int:
+        key = (keys or [""])[0]
+        self._store[key] = int(self._store.get(key, 0)) + 1
+        return self._store[key]
+
+
 class FakeRedis:
     """Минимальный async-redis для unit-lane (без Docker): хватает на SET NX EX,
-    INCR, EXPIRE, которые использует tgbotkit (dedup/throttle/guard)."""
+    INCR, EXPIRE и register_script (throttle-Lua), которые использует tgbotkit
+    (dedup/throttle/guard)."""
 
     def __init__(self) -> None:
         self._store: dict[str, Any] = {}
@@ -63,6 +79,9 @@ class FakeRedis:
 
     async def delete(self, key: str) -> int:
         return int(self._store.pop(key, None) is not None)
+
+    def register_script(self, script: str) -> _FakeScript:
+        return _FakeScript(self._store)
 
 
 @pytest.fixture

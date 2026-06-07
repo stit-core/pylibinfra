@@ -22,7 +22,7 @@ def test_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BOT_THROTTLE_RPS", "5")
     monkeypatch.setenv("BOT_I18N_DEFAULT_LOCALE", "ru")
     cfg = new_config()
-    assert cfg.token == "999:xyz"
+    assert cfg.token.get_secret_value() == "999:xyz"
     assert cfg.mode == "webhook"
     assert cfg.throttle_rps == 5
     assert cfg.i18n.default_locale == "ru"

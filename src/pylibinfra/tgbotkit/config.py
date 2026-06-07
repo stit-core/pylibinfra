@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,7 +27,8 @@ class I18nConfig(BaseSettings):
 class Config(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
 
-    token: str = Field(default="", validation_alias="BOT_TOKEN")
+    # SecretStr: токен не утекает в repr/model_dump/трейсбек ValidationError
+    token: SecretStr = Field(default=SecretStr(""), validation_alias="BOT_TOKEN")
     mode: Literal["polling", "webhook"] = Field(default="polling", validation_alias="BOT_MODE")
     parse_mode: str = Field(default="HTML", validation_alias="BOT_PARSE_MODE")
 
@@ -40,7 +41,7 @@ class Config(BaseSettings):
     # webhook-режим (в polling игнорируются)
     webhook_path: str = Field(default="/tg/webhook", validation_alias="BOT_WEBHOOK_PATH")
     webhook_base_url: str = Field(default="", validation_alias="BOT_WEBHOOK_BASE_URL")
-    webhook_secret: str = Field(default="", validation_alias="BOT_WEBHOOK_SECRET")
+    webhook_secret: SecretStr = Field(default=SecretStr(""), validation_alias="BOT_WEBHOOK_SECRET")
     drop_pending_updates: bool = Field(default=False, validation_alias="BOT_DROP_PENDING")
 
     # сек на drain in-flight апдейтов при остановке

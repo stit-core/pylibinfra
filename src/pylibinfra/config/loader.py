@@ -8,7 +8,7 @@ env читается нативно pydantic-settings (базовый слой),
 
 from typing import Any, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 
 class Source(Protocol):
@@ -22,4 +22,13 @@ def load[T: BaseModel](model_cls: type[T], *sources: Source) -> T:
             src.apply(overrides)
         except Exception as exc:
             raise RuntimeError(f"config: source[{i}]: {exc}") from exc
-    return model_cls(**overrides)
+    try:
+        return model_cls(**overrides)
+    except ValidationError as exc:
+        # str(ValidationError)/трейсбек печатает input_value — секреты утекли бы;
+        # перечисляем только локации упавших полей, без input/ctx
+        fields = ", ".join(".".join(str(p) for p in e["loc"]) or "<root>" for e in exc.errors())
+        raise RuntimeError(
+            f"config: invalid {model_cls.__name__}: {exc.error_count()} validation error(s) "
+            f"in field(s): {fields}"
+        ) from None

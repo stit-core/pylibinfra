@@ -64,6 +64,17 @@ async def test_throttle_limits_per_user(fake_redis: FakeRedis) -> None:
     assert len(calls) == 2
 
 
+async def test_throttle_skips_background_updates(fake_redis: FakeRedis) -> None:
+    mw = ThrottleMiddleware(fake_redis, rps=2)  # type: ignore[arg-type]
+    handler, calls = _counter()
+    bg = SimpleNamespace(update_id=0)  # фон через BgManager — синтетический Update
+    data = {"event_from_user": SimpleNamespace(id=7)}
+
+    for _ in range(5):  # сверх rps, но фон не троттлится
+        assert await mw(handler, bg, data) == "handled"
+    assert len(calls) == 5
+
+
 class _RecordingUX:
     def __init__(self) -> None:
         self.unhandled: list[ErrorEvent] = []
