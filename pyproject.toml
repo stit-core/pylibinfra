@@ -65,6 +65,15 @@ testkit = [
     "pytest>=9,<10",
     "pytest-asyncio>=1.4,<2",
 ]
+# tgbotkit шипится в пакете, но aiogram/aiogram_dialog/fluent нужны только тем,
+# кто строит Telegram-бота: `uv add "pylibinfra[tgbotkit]"` (паттерн testkit).
+# «framework ≠ продукт»: aiogram — это transport (как FastAPI у httpkit), небот-
+# консьюмеры его не тянут. dishka/redis/httpx/fastapi уже в core.
+tgbotkit = [
+    "aiogram>=3.28,<4",
+    "aiogram-dialog>=2.6,<3",
+    "fluent.runtime>=0.4,<0.5",
+]
 
 [project.urls]
 Homepage = "https://git.sftbmb.ru/sftbmb-core/pylibinfra"
@@ -82,6 +91,10 @@ dev = [
     # типовые стабы для mypy
     "types-aioboto3>=15.5",
     "types-hvac>=2.4",
+    # tgbotkit (extra [tgbotkit]) — в dev, чтобы mypy src и pytest видели aiogram
+    "aiogram>=3.28,<4",
+    "aiogram-dialog>=2.6,<3",
+    "fluent.runtime>=0.4,<0.5",
 ]
 
 [build-system]
@@ -137,6 +150,12 @@ warn_unused_ignores = true
 disallow_untyped_defs = true
 no_implicit_optional = true
 plugins = ["pydantic.mypy"]
+
+# fluent.runtime не поставляет py.typed — без override strict-mypy падает на
+# импорте (used by tgbotkit.i18n). Стабов на PyPI нет; гасим missing-imports.
+[[tool.mypy.overrides]]
+module = "fluent.*"
+ignore_missing_imports = true
 
 # ── pytest (аналог `go test`; integration ≈ снятие -short) ────────────────────
 [tool.pytest.ini_options]

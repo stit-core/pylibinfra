@@ -82,8 +82,9 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 |---|---|
 | `pgkit` | `DB`-фасад поверх asyncpg, `Transactor` (через `contextvars`), migrate-runner (yoyo), маппинг pg-ошибок, `DBProbe` health-probe; `ReadWriteDB` для read-replica (`PG_REPLICA_DSN`) |
 | `storagekit` | S3/object storage поверх aioboto3: `Storage` (`put`/`delete`), `URLBuilder`, in-memory адаптер для тестов, `s3`-подпакет; `Config` + `new_key` (uuidv7 + ext) |
-| `httpkit` | FastAPI bootstrap; middleware: RequestID, Recovery, AccessLog, OTel, CORS, RateLimit, MaxBody, Metrics, Auth, **SecurityHeaders**, **Idempotency**; `APIError`, `map_err`, `map_sentinel` |
+| `httpkit` | FastAPI bootstrap; middleware: RequestID, Recovery, AccessLog, OTel, CORS, RateLimit, MaxBody, Metrics, Auth, **SecurityHeaders**, **Idempotency**; `APIError`, `map_err`, `map_sentinel`; `dishka_lifespan`, `shared_secret_guard` (для вебхуков) |
 | `natskit` | Pub/sub поверх NATS: `Bus`, `publish_json`, `subscribe_json`, Provider; panic recovery + backpressure (`NATS_MAX_IN_FLIGHT`) |
+| `tgbotkit` | aiogram-bootstrap (как httpkit для FastAPI): `BotProvider`, polling/webhook `BotRunner`, outer-цепочка (request-id/dedup/throttle/RED+span/recovery), error-UX, `setup_dialogs`; точки расширения `RouterBundle`/`CommandBundle`/`NotifierBundle`/`ErrorUX`; подсистемы i18n (fluent)/notifications (JetStream)/payments (XTR)/webapp (initData). **extra `[tgbotkit]`** (aiogram, aiogram-dialog, fluent.runtime) |
 | `httpclient` | HTTP-клиент поверх httpx с retry (tenacity), circuit breaker (purgatory), OTel и автопередачей `X-Request-ID` |
 | `cachekit` | Redis-обёртка: `Cache`, `get_json`/`set_json`, `invalidate_by_tag`; `IdempotencyStore` для `httpkit` |
 | `flagkit` | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.bool/str` |
@@ -178,6 +179,7 @@ logins.add(1, {"result": "ok"})
 | `pgkit` | `db_pool_*` | per-query span (otel-asyncpg) |
 | `storagekit` | — | — |
 | `natskit` | `nats_messages_*`, `nats_{publish,handle}_duration_seconds`, `nats_inflight_messages` | producer + consumer spans (trace-propagation) |
+| `tgbotkit` | `tg_updates_total{type,result}`, `tg_update_duration_seconds`, `tg_update_panics_total`, `tg_updates_deduped_total`, `tg_payments_total{stage,result}` | per-update span `tg.update {type}` (сшивается с webhook-span httpkit) |
 | `outboxkit` | `outbox_events_*`, `outbox_batch_*`, `outbox_publish_duration_seconds`, `outbox_lag_seconds` (opt-in) | worker span |
 | `authnkit` | `jwt_verifications_total`, `password_*_duration_seconds`, `totp_verifications_total` | — |
 | `bizmetric` | `biz_<domain>_<event>_total\|_seconds\|<gauge>` | — |
@@ -195,6 +197,7 @@ logins.add(1, {"result": "ok"})
 `httpkit.SecurityHeadersConfig`, `httpkit.IdempotencyConfig`, `telemetry.Config`,
 `logkit.Config`, `logkit.RedactConfig`, `authnkit.Argon2idParams`,
 `cachekit.Config`, `flagkit.Config`, `natskit.Config`, `httpclient.BreakerConfig`,
+`httpkit.SharedSecretConfig`, `tgbotkit.Config`, `tgbotkit.I18nConfig`,
 `config.VaultClientConfig`) — **part of public API**. Менять имена полей или их
 env-alias'ы = breaking change, идёт мажорным апгрейдом.
 
