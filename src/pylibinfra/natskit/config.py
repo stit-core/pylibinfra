@@ -19,6 +19,15 @@ class JetStreamConfig(BaseSettings):
     max_in_flight: int = Field(default=100, validation_alias="NATS_JS_MAX_IN_FLIGHT")
     # секунды
     ack_wait: float = Field(default=30.0, validation_alias="NATS_JS_ACK_WAIT")
+    max_deliver: int = Field(default=5, validation_alias="NATS_JS_MAX_DELIVER")
+    # секунды задержки nak по попыткам: сервер берёт backoff[min(attempt-1, len-1)]
+    backoff: list[float] = Field(
+        default_factory=lambda: [1.0, 5.0, 15.0, 30.0], validation_alias="NATS_JS_BACKOFF"
+    )
+    flow_control: bool = Field(default=True, validation_alias="NATS_JS_FLOW_CONTROL")
+    # секунды; nats требует idle_heartbeat при flow_control для push-консьюмеров
+    idle_heartbeat: float = Field(default=5.0, validation_alias="NATS_JS_IDLE_HEARTBEAT")
+    dlq_enabled: bool = Field(default=True, validation_alias="NATS_JS_DLQ_ENABLED")
 
 
 class Config(BaseSettings):

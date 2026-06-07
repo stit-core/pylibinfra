@@ -31,6 +31,7 @@ class StreamBus(Protocol):
     async def subscribe_stream(
         self, stream: str, subject: str, durable: str, handler: Handler
     ) -> None: ...
+    async def drain(self) -> None: ...
 
 
 class DisabledStreamBus:
@@ -42,6 +43,9 @@ class DisabledStreamBus:
     ) -> None:
         raise JetStreamDisabledError()
 
+    async def drain(self) -> None:
+        return
+
 
 class JsBus:
     def __init__(self, js: JetStreamContext, cfg: Config, log: Logger | None = None) -> None:
@@ -51,13 +55,22 @@ class JsBus:
         ack_wait = cfg.jetstream.ack_wait
         if ack_wait <= 0:
             ack_wait = 30.0
+        max_deliver = cfg.jetstream.max_deliver
+        if max_deliver <= 0:
+            max_deliver = 5
         self._js = js
         self._log = log or nop()
         self._sem = asyncio.Semaphore(max_in_flight)
         self._ack_wait = ack_wait
         self._max_in_flight = max_in_flight
+        self._max_deliver = max_deliver
+        self._backoff = list(cfg.jetstream.backoff)
+        self._flow_control = cfg.jetstream.flow_control
+        self._idle_heartbeat = cfg.jetstream.idle_heartbeat
+        self._dlq_enabled = cfg.jetstream.dlq_enabled
         self._instr = NatsInstruments()
         self._tasks: set[asyncio.Task[None]] = set()
+        self._subs: list[JetStreamContext.PushSubscription] = []
 
     async def ensure_streams(self, cfg: Config) -> None:
         names = [n.strip() for n in cfg.jetstream.stream_names if n.strip()]
@@ -104,6 +117,10 @@ class JsBus:
             filter_subject=subject,
             ack_wait=self._ack_wait,
             max_ack_pending=self._max_in_flight,
+            max_deliver=self._max_deliver,
+            backoff=self._backoff,
+            flow_control=self._flow_control,
+            idle_heartbeat=self._idle_heartbeat,
         )
 
         async def cb(msg: Msg) -> None:
@@ -112,9 +129,10 @@ class JsBus:
             self._tasks.add(task)
             task.add_done_callback(self._on_done)
 
-        await self._js.subscribe(
+        sub = await self._js.subscribe(
             subject, stream=stream, durable=durable, cb=cb, manual_ack=True, config=ccfg
         )
+        self._subs.append(sub)
 
     def _on_done(self, task: asyncio.Task[None]) -> None:
         self._tasks.discard(task)
@@ -130,15 +148,32 @@ class JsBus:
             try:
                 await handler(msg.data)
             except Exception as exc:
-                status = "handler_error"
                 span.record_exception(exc)
                 span.set_status(Status(StatusCode.ERROR, str(exc)))
+                num_delivered = msg.metadata.num_delivered
+                if num_delivered >= self._max_deliver:
+                    status = "dead_letter"
+                    self._log.error(
+                        "natskit: jetstream dead-letter (max_deliver exhausted)",
+                        subject=subject,
+                        num_delivered=num_delivered,
+                        max_deliver=self._max_deliver,
+                        err=str(exc),
+                        stack=traceback.format_exc(),
+                    )
+                    # term() останавливает редоставку — иначе nak уйдёт в hot-loop до max_age стрима
+                    await msg.term()
+                    await self._to_dlq(subject, msg)
+                    return
+                status = "handler_error"
                 self._log.error(
                     "natskit: jetstream handler error",
                     subject=subject,
+                    num_delivered=num_delivered,
                     err=str(exc),
                     stack=traceback.format_exc(),
                 )
+                # backoff из ConsumerConfig применяет сервер по num_delivered — явный delay не нужен
                 await msg.nak()
                 return
             await msg.ack()
@@ -148,6 +183,40 @@ class JsBus:
             self._instr.consumed_total.add(1, {**attrs, "status": status})
             self._instr.handle_duration.record(dur, attrs)
             self._instr.inflight.add(-1, attrs)
+
+    async def _to_dlq(self, subject: str, msg: Msg) -> None:
+        if not self._dlq_enabled:
+            return
+        # core-nats publish (не JS): сабжект `dlq.{subject}` намеренно вне filter `{name}.>`
+        # стримов (ensure_streams) — его НЕЛЬЗЯ добавлять в subjects стрима, иначе term'нутое
+        # сообщение вернётся в тот же консьюмер и петля редоставки восстановится
+        dlq_subject = f"dlq.{subject}"
+        try:
+            await self._js._nc.publish(dlq_subject, msg.data, headers=msg.headers)
+        except Exception as exc:
+            self._log.error(
+                "natskit: jetstream dlq publish failed",
+                subject=subject,
+                dlq_subject=dlq_subject,
+                err=str(exc),
+            )
+
+    async def drain(self) -> None:
+        # порядок: unsubscribe (стоп новых доставок) → дождаться in-flight тасок (ack/nak до
+        # закрытия conn) → nc.drain остаётся на закрытии соединения (NatsProvider)
+        for sub in self._subs:
+            await sub.unsubscribe()
+        if not self._tasks:
+            self._log.info("natskit: jetstream drained", inflight=0)
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*self._tasks, return_exceptions=True), timeout=self._ack_wait
+            )
+        except TimeoutError:
+            self._log.error("natskit: jetstream drain timeout", inflight=len(self._tasks))
+            return
+        self._log.info("natskit: jetstream drained", inflight=0)
 
 
 def _parse_retention(s: str) -> api.RetentionPolicy:

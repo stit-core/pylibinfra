@@ -1,6 +1,7 @@
 """NotificationRunner — на старте бота поднимает все Notifier'ы (durable
-JetStream-подписки), на shutdown — drain. Реальный teardown подписок происходит
-при container.close() (NatsProvider закрывает соединение) — здесь только лог.
+JetStream-подписки), на shutdown — drain: bus.drain() отписывает консьюмеры и
+дожидается in-flight handler'ов (ack/nak до закрытия conn). Само закрытие
+соединения (nc.drain) — при container.close() (NatsProvider).
 """
 
 from __future__ import annotations
@@ -32,3 +33,4 @@ class NotificationRunner:
 
     async def drain(self) -> None:
         self._log.info("tgbotkit: notifications draining")
+        await self._bus.drain()
