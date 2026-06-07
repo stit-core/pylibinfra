@@ -24,7 +24,7 @@ from .errorux import ErrorUX, default_error_ux, register_error_handlers
 from .extension import CommandBundle, NotifierBundle, RouterBundle
 from .i18n import LocaleResolver, Translator, install_i18n
 from .metrics import TgInstruments, new_instruments
-from .middleware import install_standard_middleware
+from .middleware import OutgoingThrottleMiddleware, install_standard_middleware
 from .runner import BotRunner, build_runner
 from .storage import build_storage
 
@@ -80,10 +80,14 @@ class BotProvider(Provider):
         return new_instruments()
 
     @provide
-    async def bot(self, cfg: Config) -> AsyncIterator[Bot]:
+    async def bot(self, cfg: Config, client: redis.Redis, log: Logger) -> AsyncIterator[Bot]:
         b = Bot(
             cfg.token.get_secret_value(), default=DefaultBotProperties(parse_mode=cfg.parse_mode)
         )
+        # session-level throttle: rate-limit (H2) + per-chat ordering (H5) на ВСЕХ
+        # исходящих вызовах (рендеры диалога И доставка через BgManager).
+        if cfg.flood_enabled:
+            b.session.middleware(OutgoingThrottleMiddleware(client, cfg, log))
         yield b
         await b.session.close()  # после container.close (lifecycle 06 §5)
 

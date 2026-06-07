@@ -11,6 +11,10 @@ def test_defaults() -> None:
     assert cfg.dedup_enabled is True
     assert cfg.dedup_ttl == 600.0
     assert cfg.throttle_rps == 0
+    assert cfg.flood_enabled is True
+    assert cfg.rate_global == 30.0
+    assert cfg.rate_per_chat == 1.0
+    assert cfg.retry_after_attempts == 3
     assert cfg.webhook_path == "/tg/webhook"
     assert cfg.i18n.default_locale == "en"
     assert cfg.i18n.locales_dir == ""

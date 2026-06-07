@@ -56,6 +56,24 @@ class _FakeScript:
         return self._store[key]
 
 
+class _FakeGcraScript:
+    """Стаб GCRA-Lua (flood.py): хранит TAT (мс) по ключу, возвращает wait — сколько
+    спать до свободного токена (0 если можно сразу). args=[interval_ms, now_ms]."""
+
+    def __init__(self, store: dict[str, Any]) -> None:
+        self._store = store
+
+    async def __call__(
+        self, keys: Sequence[str] | None = None, args: Sequence[Any] | None = None
+    ) -> float:
+        key = (keys or [""])[0]
+        interval, now = float((args or [0, 0])[0]), float((args or [0, 0])[1])
+        tat = max(float(self._store.get(key, now)), now)
+        wait = tat - now
+        self._store[key] = tat + interval
+        return wait
+
+
 class FakeRedis:
     """Минимальный async-redis для unit-lane (без Docker): хватает на SET NX EX,
     INCR, EXPIRE и register_script (throttle-Lua), которые использует tgbotkit
@@ -86,7 +104,10 @@ class FakeRedis:
     async def delete(self, key: str) -> int:
         return int(self._store.pop(key, None) is not None)
 
-    def register_script(self, script: str) -> _FakeScript:
+    def register_script(self, script: str) -> _FakeScript | _FakeGcraScript:
+        # GCRA-скрипт flood.py содержит TAT-логику; throttle-скрипт — INCR.
+        if "tat" in script:
+            return _FakeGcraScript(self._store)
         return _FakeScript(self._store)
 
 

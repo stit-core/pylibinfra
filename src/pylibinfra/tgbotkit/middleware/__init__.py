@@ -14,6 +14,7 @@ from pylibinfra.tgbotkit.errorux import ErrorUX
 from pylibinfra.tgbotkit.metrics import TgInstruments
 
 from .dedup import DedupMiddleware
+from .flood import OutgoingThrottleMiddleware
 from .observability import ObservabilityMiddleware
 from .recovery import RecoveryMiddleware
 from .request_id import RequestIdMiddleware
@@ -22,6 +23,7 @@ from .throttle import ThrottleMiddleware
 __all__ = [
     "DedupMiddleware",
     "ObservabilityMiddleware",
+    "OutgoingThrottleMiddleware",
     "RecoveryMiddleware",
     "RequestIdMiddleware",
     "ThrottleMiddleware",

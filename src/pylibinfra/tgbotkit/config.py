@@ -38,6 +38,12 @@ class Config(BaseSettings):
     # per-user троттлинг апдейтов; 0 = off (как rate-limit у httpkit)
     throttle_rps: int = Field(default=0, validation_alias="BOT_THROTTLE_RPS")
 
+    # исходящий rate-limit/ordering/429-retry (OutgoingThrottleMiddleware на bot.session)
+    flood_enabled: bool = Field(default=True, validation_alias="BOT_FLOOD_ENABLED")
+    rate_global: float = Field(default=30.0, validation_alias="BOT_RATE_GLOBAL")  # msg/s
+    rate_per_chat: float = Field(default=1.0, validation_alias="BOT_RATE_PER_CHAT")  # msg/s/chat
+    retry_after_attempts: int = Field(default=3, validation_alias="BOT_RETRY_AFTER_ATTEMPTS")
+
     # webhook-режим (в polling игнорируются)
     webhook_path: str = Field(default="/tg/webhook", validation_alias="BOT_WEBHOOK_PATH")
     webhook_base_url: str = Field(default="", validation_alias="BOT_WEBHOOK_BASE_URL")
