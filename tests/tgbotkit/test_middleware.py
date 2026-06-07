@@ -41,6 +41,17 @@ async def test_dedup_drops_duplicate(
     assert read_metric("tg_updates_deduped_total") == 1
 
 
+async def test_dedup_fail_open_on_redis_error() -> None:
+    instr = new_instruments()
+    mw = DedupMiddleware(FakeRedis(fail_set=True), 600, instr, nop())  # type: ignore[arg-type]
+    handler, calls = _counter()
+    update = SimpleNamespace(update_id=42, event_type="message")
+
+    # redis недоступен → set бросает RedisError → апдеёт всё равно проходит (fail-open)
+    assert await mw(handler, update, {}) == "handled"
+    assert len(calls) == 1
+
+
 async def test_dedup_skips_background_events(fake_redis: FakeRedis) -> None:
     instr = new_instruments()
     mw = DedupMiddleware(fake_redis, 600, instr)  # type: ignore[arg-type]

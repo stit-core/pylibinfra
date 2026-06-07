@@ -38,6 +38,7 @@ class Config(BaseSettings):
     connect_timeout: float = Field(default=5.0, validation_alias="NATS_CONNECT_TIMEOUT")
     # секунды
     reconnect_wait: float = Field(default=2.0, validation_alias="NATS_RECONNECT_WAIT")
-    max_reconnects: int = Field(default=60, validation_alias="NATS_MAX_RECONNECTS")
+    # -1 = бесконечно: consumer-бот не должен молча умирать после серии reconnect'ов
+    max_reconnects: int = Field(default=-1, validation_alias="NATS_MAX_RECONNECTS")
     backpressure: BackpressureConfig = Field(default_factory=BackpressureConfig)
     jetstream: JetStreamConfig = Field(default_factory=JetStreamConfig)

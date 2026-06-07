@@ -17,7 +17,7 @@ from aiogram.fsm.storage.redis import RedisStorage
 from dishka import AsyncContainer, Provider, Scope, provide
 
 from pylibinfra.logkit import Logger, nop
-from pylibinfra.natskit import StreamBus
+from pylibinfra.natskit import Conn, StreamBus
 
 from .config import Config
 from .errorux import ErrorUX, default_error_ux, register_error_handlers
@@ -31,6 +31,7 @@ from .storage import build_storage
 # optional-зависимости через type-wrappers (dishka не умеет optional по X | None):
 # kit даёт None-дефолт, consumer override'ит своим Provider'ом (last-wins).
 OptionalStreamBus = StreamBus | None
+OptionalConn = Conn | None
 OptionalTranslator = Translator | None
 OptionalLocaleResolver = LocaleResolver | None
 
@@ -60,6 +61,10 @@ class BotProvider(Provider):
 
     @provide
     def default_bus(self) -> OptionalStreamBus:
+        return None
+
+    @provide
+    def default_conn(self) -> OptionalConn:
         return None
 
     @provide
@@ -121,6 +126,7 @@ class BotProvider(Provider):
         log: Logger,
         notifiers: NotifierBundle,
         bus: OptionalStreamBus,
+        conn: OptionalConn,
         container: AsyncContainer,
     ) -> BotRunner:
         return build_runner(
@@ -132,6 +138,7 @@ class BotProvider(Provider):
             log=log,
             notifiers=notifiers,
             bus=bus,
+            conn=conn,
         )
 
 

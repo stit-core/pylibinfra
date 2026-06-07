@@ -39,7 +39,7 @@ def install_standard_middleware(
 ) -> None:
     dp.update.outer_middleware(RequestIdMiddleware())
     if cfg.dedup_enabled:
-        dp.update.outer_middleware(DedupMiddleware(client, cfg.dedup_ttl, instruments))
+        dp.update.outer_middleware(DedupMiddleware(client, cfg.dedup_ttl, instruments, log))
     if cfg.throttle_rps > 0:
         dp.update.outer_middleware(ThrottleMiddleware(client, cfg.throttle_rps))
     dp.update.outer_middleware(RecoveryMiddleware(ux, instruments, log))

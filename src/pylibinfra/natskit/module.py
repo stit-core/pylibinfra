@@ -1,14 +1,13 @@
 from collections.abc import AsyncIterator, Callable, Coroutine
 from typing import Any
 
-import nats
 from dishka import Provider, Scope, provide
 
 from pylibinfra.logkit import Logger, nop
 
 from .bus import Bus, NatsBus
 from .config import Config
-from .conn import Conn
+from .conn import Conn, new_conn
 from .jetstream import StreamBus, new_stream_bus
 
 
@@ -19,17 +18,12 @@ class NatsProvider(Provider):
     scope = Scope.APP
 
     @provide
-    async def conn(self, cfg: Config) -> AsyncIterator[Conn]:
-        nc = await nats.connect(
-            cfg.url,
-            connect_timeout=cfg.connect_timeout,
-            reconnect_time_wait=cfg.reconnect_wait,
-            max_reconnect_attempts=cfg.max_reconnects,
-        )
+    async def conn(self, cfg: Config, log: Logger) -> AsyncIterator[Conn]:
+        conn = await new_conn(cfg, log)
         try:
-            yield Conn(nc)
+            yield conn
         finally:
-            await nc.drain()
+            await conn.raw.drain()
 
     @provide(provides=Bus)
     def bus(self, conn: Conn, cfg: Config, log: Logger) -> Bus:

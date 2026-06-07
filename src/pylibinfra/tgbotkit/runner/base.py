@@ -16,8 +16,9 @@ from aiogram_dialog import BgManagerFactory, setup_dialogs
 from dishka import AsyncContainer
 from dishka.integrations.aiogram import setup_dishka
 
+from pylibinfra.httpkit import Probe
 from pylibinfra.logkit import Logger, nop
-from pylibinfra.natskit import StreamBus
+from pylibinfra.natskit import Conn, StreamBus
 from pylibinfra.tgbotkit.config import Config
 from pylibinfra.tgbotkit.extension import NotifierBundle
 from pylibinfra.tgbotkit.notifications.delivery import Delivery
@@ -41,6 +42,7 @@ class _BaseRunner:
         log: Logger | None = None,
         notifiers: NotifierBundle = (),
         bus: StreamBus | None = None,
+        conn: Conn | None = None,
     ) -> None:
         self._cfg = cfg
         self._bot = bot
@@ -50,8 +52,26 @@ class _BaseRunner:
         self._log = log or nop()
         self._notifiers = notifiers
         self._bus = bus
+        self._conn = conn
         self._isolation: RedisEventIsolation | None = None
         self._notif: NotificationRunner | None = None
+
+    async def _bot_probe(self) -> None:
+        await self._bot.get_me()
+
+    async def _redis_probe(self) -> None:
+        await self._client.ping()
+
+    async def _nats_probe(self) -> None:
+        if self._conn is not None:
+            self._conn.healthy()
+
+    def _probes(self) -> tuple[Probe, ...]:
+        # nats-probe только при наличии Conn (бот без NATS не должен 503'ить по nats)
+        probes: list[Probe] = [self._bot_probe, self._redis_probe]
+        if self._conn is not None:
+            probes.append(self._nats_probe)
+        return tuple(probes)
 
     async def _bind(self) -> BgManagerFactory:
         setup_dishka(self._container, self._dp)

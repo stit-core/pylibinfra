@@ -7,7 +7,7 @@ from aiogram import Bot, Dispatcher
 from dishka import AsyncContainer
 
 from pylibinfra.logkit import Logger
-from pylibinfra.natskit import StreamBus
+from pylibinfra.natskit import Conn, StreamBus
 from pylibinfra.tgbotkit.config import Config
 from pylibinfra.tgbotkit.extension import NotifierBundle
 
@@ -28,6 +28,7 @@ def build_runner(
     log: Logger | None = None,
     notifiers: NotifierBundle = (),
     bus: StreamBus | None = None,
+    conn: Conn | None = None,
 ) -> BotRunner:
     runner_cls: type[_BaseRunner] = WebhookRunner if cfg.mode == "webhook" else PollingRunner
     return runner_cls(
@@ -39,4 +40,5 @@ def build_runner(
         log=log,
         notifiers=notifiers,
         bus=bus,
+        conn=conn,
     )

@@ -19,9 +19,6 @@ from .base import _BaseRunner
 
 
 class WebhookRunner(_BaseRunner):
-    async def _probe(self) -> None:
-        await self._bot.get_me()
-
     async def _handle(self, request: Request) -> Response:
         payload = await request.json()
         update = Update.model_validate(payload, context={"bot": self._bot})
@@ -37,7 +34,7 @@ class WebhookRunner(_BaseRunner):
                 secret=cfg.webhook_secret.get_secret_value(),
             )
         )
-        server = httpkit.Server(http_cfg, self._log, probes=(self._probe,))
+        server = httpkit.Server(http_cfg, self._log, probes=self._probes())
         server.app.add_api_route(
             cfg.webhook_path, self._handle, methods=["POST"], dependencies=[Depends(guard)]
         )

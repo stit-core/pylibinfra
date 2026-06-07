@@ -59,12 +59,18 @@ class _FakeScript:
 class FakeRedis:
     """Минимальный async-redis для unit-lane (без Docker): хватает на SET NX EX,
     INCR, EXPIRE и register_script (throttle-Lua), которые использует tgbotkit
-    (dedup/throttle/guard)."""
+    (dedup/throttle/guard). fail_set=True моделирует упавший redis (set бросает
+    RedisError)."""
 
-    def __init__(self) -> None:
+    def __init__(self, fail_set: bool = False) -> None:
         self._store: dict[str, Any] = {}
+        self._fail_set = fail_set
 
     async def set(self, key: str, value: Any, nx: bool = False, ex: Any = None) -> bool | None:
+        if self._fail_set:
+            from redis.exceptions import RedisError
+
+            raise RedisError("redis down")
         if nx and key in self._store:
             return None
         self._store[key] = value
