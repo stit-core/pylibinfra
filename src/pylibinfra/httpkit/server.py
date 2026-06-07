@@ -19,6 +19,7 @@ from .cors import apply_cors
 from .error import register_error_handlers
 from .health import Probe, register_health
 from .idempotency import IdempotencyMiddleware, IdempotencyStore
+from .lifespan import Lifespan
 from .maxbody import MaxBodyMiddleware
 from .metrics import HTTPInstruments, new_instruments
 from .middleware import (
@@ -45,9 +46,10 @@ def build_app(
     store: IdempotencyStore | None = None,
     auth: AuthExtractor | None = None,
     probes: tuple[Probe, ...] = (),
+    lifespan: Lifespan | None = None,
 ) -> FastAPI:
     instr = instruments if instruments is not None else new_instruments()
-    app = FastAPI(title=cfg.api_title, version=cfg.api_version)
+    app = FastAPI(title=cfg.api_title, version=cfg.api_version, lifespan=lifespan)
 
     register_error_handlers(app)
     register_health(app, *probes)
@@ -87,9 +89,15 @@ class Server:
         auth: AuthExtractor | None = None,
         probes: tuple[Probe, ...] = (),
         instruments: HTTPInstruments | None = None,
+        lifespan: Lifespan | None = None,
+        autostart: bool = True,
     ) -> None:
         self._cfg = cfg
         self._log = log if log is not None else nop()
+        # autostart=False оставляет Server лишь оболочкой над .app (consumer сам
+        # решает, как сервить) — start() становится no-op. Webhook-runner так не
+        # делает: он дорегистрирует роуты в .app, затем зовёт start() штатно.
+        self._autostart = autostart
         self.app = build_app(
             cfg,
             self._log,
@@ -97,6 +105,7 @@ class Server:
             store=store,
             auth=auth,
             probes=probes,
+            lifespan=lifespan,
         )
         host, port = _addr_host_port(cfg.addr)
         self._uvicorn = uvicorn.Server(
@@ -113,6 +122,8 @@ class Server:
         self._serve_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
+        if not self._autostart:
+            return
         self._serve_task = asyncio.create_task(self._uvicorn.serve())
 
     async def stop(self) -> None:

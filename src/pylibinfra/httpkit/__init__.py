@@ -27,6 +27,7 @@ from .error import (
 )
 from .health import Probe, register_health
 from .idempotency import IdempotencyConfig, IdempotencyMiddleware, IdempotencyStore
+from .lifespan import Lifespan, dishka_lifespan
 from .maxbody import MaxBodyConfig, MaxBodyMiddleware
 from .metrics import HTTPInstruments, new_instruments
 from .middleware import (
@@ -39,6 +40,7 @@ from .module import HttpProvider, OptionalAuth, OptionalStore, ProbeBundle, setu
 from .ratelimit import RateLimitConfig, RateLimitMiddleware
 from .security import SecurityHeadersConfig, SecurityHeadersMiddleware
 from .server import Server, build_app
+from .webhook_secret import SharedSecretConfig, shared_secret_guard
 
 __all__ = [
     "HEADER_REQUEST_ID",
@@ -55,6 +57,7 @@ __all__ = [
     "IdempotencyConfig",
     "IdempotencyMiddleware",
     "IdempotencyStore",
+    "Lifespan",
     "MaxBodyConfig",
     "MaxBodyMiddleware",
     "MetricsMiddleware",
@@ -69,10 +72,12 @@ __all__ = [
     "SecurityHeadersConfig",
     "SecurityHeadersMiddleware",
     "Server",
+    "SharedSecretConfig",
     "apply_cors",
     "bad_request",
     "build_app",
     "conflict",
+    "dishka_lifespan",
     "error",
     "forbidden",
     "internal",
@@ -85,5 +90,6 @@ __all__ = [
     "register_health",
     "request_id",
     "setup",
+    "shared_secret_guard",
     "unauthorized",
 ]
