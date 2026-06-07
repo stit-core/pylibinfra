@@ -11,19 +11,21 @@ from pylibinfra.clockkit import Clock, Fixed, Tickable
 
 _MAX = 3
 _LOCK = timedelta(minutes=15)
+_WINDOW = timedelta(hours=1)
 
 
 @dataclass
 class _Entry:
     failed_count: int = 0
     locked_until: datetime | None = None
+    last_attempt: datetime | None = None
 
 
 @dataclass
 class _FakeStore:
-    """Зеркалит SQL pgstore: ключ (subject, ip), инкремент счётчика, выставление
-    locked_until при достижении порога. now берётся из того же Clock, что и Guard,
-    чтобы окно блокировки было детерминированным."""
+    """Зеркалит SQL pgstore: ключ (subject, ip), инкремент счётчика в скользящем
+    окне _WINDOW, выставление locked_until при достижении порога. now берётся из
+    того же Clock, что и Guard, чтобы окна были детерминированными."""
 
     clock: Clock
     rows: dict[tuple[str, str], _Entry] = field(default_factory=dict)
@@ -33,12 +35,16 @@ class _FakeStore:
         return entry.locked_until if entry else None
 
     async def record_failure(self, subject: str, ip: str) -> None:
+        now = self.clock.now()
         entry = self.rows.setdefault((subject, ip), _Entry())
-        entry.failed_count += 1
-        if entry.failed_count >= _MAX:
-            entry.locked_until = self.clock.now() + _LOCK
-        else:
+        # Прежние неудачи старше окна «протухли» — счётчик начинается заново.
+        if entry.last_attempt is not None and entry.last_attempt < now - _WINDOW:
+            entry.failed_count = 1
             entry.locked_until = None
+        else:
+            entry.failed_count += 1
+            entry.locked_until = now + _LOCK if entry.failed_count >= _MAX else None
+        entry.last_attempt = now
 
     async def reset(self, subject: str, ip: str) -> None:
         self.rows.pop((subject, ip), None)
@@ -86,6 +92,30 @@ async def test_lockout_expires_with_time() -> None:
 
     clock.advance(timedelta(seconds=2))
     assert await guard.check("user@example.com", "10.0.0.1") is None
+
+
+async def test_failures_outside_window_dont_accumulate() -> None:
+    clock = Tickable(datetime(2026, 1, 1, tzinfo=UTC))
+    guard, _ = _guard(clock)
+    # _MAX-1 неудач, затем пауза дольше окна — они «протухают».
+    for _ in range(_MAX - 1):
+        await guard.record_failure("user@example.com", "10.0.0.1")
+    clock.advance(_WINDOW + timedelta(seconds=1))
+
+    # Свежая серия из _MAX-1 неудач (окно сбросило счётчик) не блокирует.
+    for _ in range(_MAX - 1):
+        await guard.record_failure("user@example.com", "10.0.0.1")
+    assert await guard.check("user@example.com", "10.0.0.1") is None
+
+
+async def test_failures_within_window_lock() -> None:
+    clock = Tickable(datetime(2026, 1, 1, tzinfo=UTC))
+    guard, _ = _guard(clock)
+    # _MAX неудач подряд в пределах окна — блокировка.
+    for _ in range(_MAX):
+        await guard.record_failure("user@example.com", "10.0.0.1")
+        clock.advance(timedelta(seconds=1))
+    assert await guard.check("user@example.com", "10.0.0.1") is not None
 
 
 async def test_record_success_resets() -> None:

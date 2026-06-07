@@ -10,13 +10,22 @@ FROM bruteforce_attempts
 WHERE subject = $1 AND ip = $2
 """
 
+# Скользящее окно: если прошлая попытка старше $5 секунд, прежние неудачи
+# «протухли» — счётчик начинается заново с 1 (а не растёт бесконечно). Иначе
+# инкремент. Lock выставляется, когда счётчик в пределах окна достиг порога $3.
 _RECORD_FAILURE_SQL = """
 INSERT INTO bruteforce_attempts (subject, ip, failed_count, last_attempt)
 VALUES ($1, $2, 1, NOW())
 ON CONFLICT (subject, ip) DO UPDATE
-SET failed_count = bruteforce_attempts.failed_count + 1,
+SET failed_count = CASE
+        WHEN bruteforce_attempts.last_attempt < NOW() - make_interval(secs => $5)
+        THEN 1
+        ELSE bruteforce_attempts.failed_count + 1
+    END,
     last_attempt = NOW(),
     locked_until = CASE
+        WHEN bruteforce_attempts.last_attempt < NOW() - make_interval(secs => $5)
+        THEN NULL
         WHEN bruteforce_attempts.failed_count + 1 >= $3
         THEN NOW() + make_interval(secs => $4)
         ELSE NULL
@@ -44,7 +53,10 @@ class PgStore:
 
     async def record_failure(self, subject: str, ip: str) -> None:
         lock_secs = int(self._cfg.lock_duration)
-        await self._db.execute(_RECORD_FAILURE_SQL, subject, ip, self._cfg.max_failures, lock_secs)
+        window_secs = int(self._cfg.window)
+        await self._db.execute(
+            _RECORD_FAILURE_SQL, subject, ip, self._cfg.max_failures, lock_secs, window_secs
+        )
 
     async def reset(self, subject: str, ip: str) -> None:
         await self._db.execute(_RESET_SQL, subject, ip)

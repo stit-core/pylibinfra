@@ -50,7 +50,4 @@ class Config(BaseSettings):
     webhook_secret: SecretStr = Field(default=SecretStr(""), validation_alias="BOT_WEBHOOK_SECRET")
     drop_pending_updates: bool = Field(default=False, validation_alias="BOT_DROP_PENDING")
 
-    # сек на drain in-flight апдейтов при остановке
-    shutdown_drain: float = Field(default=10.0, validation_alias="BOT_SHUTDOWN_DRAIN")
-
     i18n: I18nConfig = Field(default_factory=I18nConfig)

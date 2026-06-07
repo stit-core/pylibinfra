@@ -72,3 +72,37 @@ async def test_cleanup_keeps_locked(guard: Guard) -> None:
 
     assert await guard.check("stale@example.com", "1.1.1.1") is None
     assert await guard.check("locked@example.com", "2.2.2.2") is not None
+
+
+async def test_failures_outside_window_reset_counter(pg_dsn: str) -> None:
+    # Реальное NOW() БД нельзя сдвинуть, поэтому состариваем last_attempt руками,
+    # имитируя неудачи за пределами окна — проверяем сброс счётчика.
+    pool = await new_pool(PoolConfig(dsn=pg_dsn, min_conns=1, max_conns=3))
+    try:
+        await pool.execute("TRUNCATE bruteforce_attempts")
+        guard = Guard(PgStore(DB(pool), _CFG), Real())
+        subject, ip = "windowed@example.com", "10.0.0.9"
+
+        for _ in range(_CFG.max_failures - 1):
+            await guard.record_failure(subject, ip)
+        # Сдвигаем последнюю попытку за окно — прежние неудачи «протухли».
+        await pool.execute(
+            "UPDATE bruteforce_attempts SET last_attempt = NOW() - make_interval(secs => $1) "
+            "WHERE subject = $2 AND ip = $3",
+            int(_CFG.window) + 60,
+            subject,
+            ip,
+        )
+
+        # Новая неудача стартует счётчик заново → не блокирует.
+        await guard.record_failure(subject, ip)
+        assert await guard.check(subject, ip) is None
+
+        count = await pool.fetchval(
+            "SELECT failed_count FROM bruteforce_attempts WHERE subject = $1 AND ip = $2",
+            subject,
+            ip,
+        )
+        assert count == 1
+    finally:
+        await pool.close()

@@ -10,7 +10,7 @@ def test_pool_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.dsn == "postgresql://localhost/app"
     assert cfg.max_conns == 10
     assert cfg.min_conns == 2
-    assert cfg.max_conn_lifetime == 1800.0
+    assert cfg.max_conn_idle_time == 300.0
     assert cfg.otel_trace is True
     assert cfg.statement_timeout == 30.0
 

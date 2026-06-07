@@ -21,7 +21,6 @@ class Config(BaseSettings):
     addr: str = Field(default=":8080", validation_alias="HTTP_ADDR")
     # секунды
     read_timeout: float = Field(default=15.0, validation_alias="HTTP_READ_TIMEOUT")
-    write_timeout: float = Field(default=30.0, validation_alias="HTTP_WRITE_TIMEOUT")
     idle_timeout: float = Field(default=60.0, validation_alias="HTTP_IDLE_TIMEOUT")
     shutdown_timeout: float = Field(default=15.0, validation_alias="HTTP_SHUTDOWN_TIMEOUT")
     api_title: str = Field(default="API", validation_alias="HTTP_API_TITLE")

@@ -18,7 +18,6 @@ class PoolConfig(BaseSettings):
     max_conns: int = Field(default=10, validation_alias="PG_MAX_CONNS")
     min_conns: int = Field(default=2, validation_alias="PG_MIN_CONNS")
     # секунды
-    max_conn_lifetime: float = Field(default=1800.0, validation_alias="PG_MAX_CONN_LIFETIME")
     max_conn_idle_time: float = Field(default=300.0, validation_alias="PG_MAX_CONN_IDLE_TIME")
     otel_trace: bool = Field(default=True, validation_alias="PG_OTEL_TRACE")
 

@@ -7,7 +7,6 @@ def test_defaults() -> None:
     cfg = Config(_env_file=None)
     assert cfg.addr == ":8080"
     assert cfg.read_timeout == 15.0
-    assert cfg.write_timeout == 30.0
     assert cfg.idle_timeout == 60.0
     assert cfg.shutdown_timeout == 15.0
     assert cfg.api_title == "API"
