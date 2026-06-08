@@ -151,6 +151,13 @@ disallow_untyped_defs = true
 no_implicit_optional = true
 plugins = ["pydantic.mypy"]
 
+# init_typed: синтезированный __init__ модели типизирован реальными полями (не Any);
+# init_forbid_extra: запрещает неизвестные kwargs в конструктор — ловит класс
+# JSON→DTO-ошибок (опечатка поля / лишний ключ) на mypy, а не в рантайме.
+[tool.pydantic-mypy]
+init_typed = true
+init_forbid_extra = true
+
 # fluent.runtime не поставляет py.typed — без override strict-mypy падает на
 # импорте (used by tgbotkit.i18n). Стабов на PyPI нет; гасим missing-imports.
 [[tool.mypy.overrides]]
