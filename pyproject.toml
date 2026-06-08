@@ -5,7 +5,7 @@ description = "Инфраструктурные Python-kit'ы с observability �
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
-authors = [{ name = "sftbmb-core" }]
+authors = [{ name = "stit-core" }]
 keywords = ["infrastructure", "observability", "opentelemetry", "fastapi", "dishka"]
 
 dependencies = [
@@ -76,8 +76,8 @@ tgbotkit = [
 ]
 
 [project.urls]
-Homepage = "https://git.sftbmb.ru/sftbmb-core/pylibinfra"
-Showcase = "https://git.sftbmb.ru/sftbmb-core/sftbmb-public"
+Homepage = "https://git.stit.tech/stit-core/pylibinfra"
+Showcase = "https://git.stit.tech/stit-core/sftbmb-public"
 
 [dependency-groups]
 dev = [

@@ -6,7 +6,7 @@ description: Выпустить новую версию pylibinfra — bump ве
 # Skill: release
 
 Версия pylibinfra — поле `version` в `pyproject.toml` + git-тег `vX.Y.Z`. Реестр —
-сам Gitea (`git.sftbmb.ru`); консьюмеры тянут пакет из git по тегу.
+сам Gitea (`git.stit.tech`); консьюмеры тянут пакет из git по тегу.
 
 ## Когда применять
 
@@ -36,7 +36,7 @@ description: Выпустить новую версию pylibinfra — bump ве
    ```
 4. **Следующий шаг — консьюмеру.** Напечатай блок обновления:
    ```bash
-   uv add "pylibinfra @ git+https://git.sftbmb.ru/sftbmb-core/pylibinfra.git@vX.Y.Z"
+   uv add "pylibinfra @ git+https://git.stit.tech/stit-core/pylibinfra.git@vX.Y.Z"
    uv sync
    ```
 5. **Если менялись эмитимые сигналы** (метрики/labels/span-attrs) — напомни обновить
