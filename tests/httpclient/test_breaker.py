@@ -49,6 +49,30 @@ async def test_breaker_opens_after_threshold(metrics_view: Any) -> None:
     assert metrics_view.total("http_client_breaker_transitions_total") >= 1
 
 
+async def test_breaker_name_labels_metrics(
+    metrics_view: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Вложенный BreakerConfig читается из ENV (default_factory), не из init-kwargs
+    # Config — поэтому имя/порог брейкера задаём через setenv.
+    monkeypatch.setenv("HTTPCLIENT_BREAKER_FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("HTTPCLIENT_BREAKER_NAME", "crm")
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    c = _client(handler, _cfg())
+    for _ in range(2):
+        with pytest.raises(httpx.HTTPStatusError):
+            await c.get("http://svc/ping")
+    with pytest.raises(BreakerOpenError):
+        await c.get("http://svc/ping")
+    await c.aclose()
+
+    # breaker_name → label {"name": "crm"} (per-API метрики), не дефолт "httpclient".
+    assert metrics_view.total("http_client_breaker_open", {"name": "crm"}) == 1
+    assert metrics_view.total("http_client_breaker_open", {"name": "httpclient"}) == 0
+
+
 async def test_breaker_stays_closed_on_success() -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(200)

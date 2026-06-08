@@ -17,7 +17,7 @@ from opentelemetry.trace import Status, StatusCode
 from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_after_attempt
 from tenacity.wait import wait_base
 
-from .breaker import BREAKER_NAME, new_breaker
+from .breaker import new_breaker
 from .config import Config
 from .metrics import Instruments, new_instruments
 from .reqid import HEADER_REQUEST_ID, request_id
@@ -114,7 +114,7 @@ class Client:
         # Брейкер оборачивает всю retry-последовательность (как
         # breaker.Execute(doWithRetry) в Go): открыт → OpenedState на входе,
         # быстрый фейл без обращения к transport.
-        brk = await self._breaker.get_breaker(BREAKER_NAME)
+        brk = await self._breaker.get_breaker(self._cfg.breaker.name)
         async with brk:
             return await self._do_with_retry(method, url, **kwargs)
 

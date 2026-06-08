@@ -4,7 +4,9 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 
-def _read_total(reader: InMemoryMetricReader, name: str) -> float:
+def _read_total(
+    reader: InMemoryMetricReader, name: str, where: dict[str, object] | None = None
+) -> float:
     data = reader.get_metrics_data()
     if data is None:
         return 0.0
@@ -15,6 +17,9 @@ def _read_total(reader: InMemoryMetricReader, name: str) -> float:
                 if metric.name != name:
                     continue
                 for point in metric.data.data_points:
+                    attrs = dict(point.attributes or {})
+                    if where is not None and any(attrs.get(k) != v for k, v in where.items()):
+                        continue
                     acc += getattr(point, "value", 0) or 0
     return acc
 
@@ -23,8 +28,8 @@ class _Metrics:
     def __init__(self, reader: InMemoryMetricReader) -> None:
         self._reader = reader
 
-    def total(self, name: str) -> float:
-        return _read_total(self._reader, name)
+    def total(self, name: str, where: dict[str, object] | None = None) -> float:
+        return _read_total(self._reader, name, where)
 
 
 @pytest.fixture

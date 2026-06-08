@@ -30,14 +30,17 @@ def test_breaker_config_defaults() -> None:
     assert b.failure_threshold == 5
     assert b.recovery_timeout == 30.0
     assert b.success_threshold == 3
+    assert b.name == "httpclient"
 
 
 def test_breaker_config_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HTTPCLIENT_BREAKER_FAILURE_THRESHOLD", "10")
     monkeypatch.setenv("HTTPCLIENT_BREAKER_RECOVERY_TIMEOUT", "5.0")
     monkeypatch.setenv("HTTPCLIENT_BREAKER_SUCCESS_THRESHOLD", "1")
+    monkeypatch.setenv("HTTPCLIENT_BREAKER_NAME", "crm")
 
     b = new_breaker_config()
     assert b.failure_threshold == 10
     assert b.recovery_timeout == 5.0
     assert b.success_threshold == 1
+    assert b.name == "crm"
