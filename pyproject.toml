@@ -77,7 +77,7 @@ tgbotkit = [
 
 [project.urls]
 Homepage = "https://git.stit.tech/stit-core/pylibinfra"
-Showcase = "https://git.stit.tech/stit-core/sftbmb-public"
+Showcase = "https://git.stit.tech/stit-core/stit-public"
 
 [dependency-groups]
 dev = [
