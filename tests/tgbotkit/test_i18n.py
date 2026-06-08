@@ -2,7 +2,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from pylibinfra.tgbotkit import FluentTranslator, I18NFormat
+from pylibinfra.tgbotkit import FluentTranslator, I18nConfig, I18NFormat
+from pylibinfra.tgbotkit.i18n import build_translator
 from pylibinfra.tgbotkit.i18n.format import I18N_FORMAT_KEY
 
 
@@ -42,3 +43,17 @@ def test_fluent_translator_falls_back_to_default_locale(tmp_path: Path) -> None:
     fmt = tr.for_locale("ru")
     # ключа нет в ru → берётся из дефолта en
     assert "English only" in fmt("only-en", None)
+
+
+def test_build_translator_none_without_locales_dir() -> None:
+    assert build_translator(I18nConfig(locales_dir="")) is None
+
+
+def test_build_translator_builds_from_config(tmp_path: Path) -> None:
+    (tmp_path / "en").mkdir()
+    (tmp_path / "en" / "main.ftl").write_text("greeting = Hi { $name }\n", encoding="utf-8")
+    tr = build_translator(
+        I18nConfig(default_locale="en", locales_dir=str(tmp_path), resources=["main.ftl"])
+    )
+    assert tr is not None
+    assert "Bob" in tr.for_locale("en")("greeting", {"name": "Bob"})

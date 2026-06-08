@@ -19,13 +19,31 @@ from aiogram_dialog import BgManagerFactory, StartMode
 
 from pylibinfra.httpclient import request_id as _httpclient_request_id
 from pylibinfra.logkit import Logger, nop
+from pylibinfra.tgbotkit.i18n import Translator
 
 
 class Delivery:
-    def __init__(self, bg_factory: BgManagerFactory, bot: Bot, log: Logger | None = None) -> None:
+    def __init__(
+        self,
+        bg_factory: BgManagerFactory,
+        bot: Bot,
+        log: Logger | None = None,
+        translator: Translator | None = None,
+        default_locale: str = "en",
+    ) -> None:
         self._bg = bg_factory
         self._bot = bot
         self._log = log or nop()
+        self._tr = translator
+        self._default_locale = default_locale
+
+    def localize(self, locale: str | None, key: str, args: dict[str, Any] | None = None) -> str:
+        """Рендер .ftl-ключа для фоновой доставки (вне I18nMiddleware): в locale, иначе
+        default. Без настроенного i18n возвращает key (как I18NFormat в тестах). Какую
+        локаль брать (явный выбор/язык юзера) — резолвит звонящий: это продуктовое."""
+        if self._tr is None:
+            return key
+        return self._tr.for_locale(locale or self._default_locale)(key, args)
 
     async def start_dialog(
         self,

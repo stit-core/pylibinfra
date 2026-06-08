@@ -21,6 +21,7 @@ from pylibinfra.logkit import Logger, nop
 from pylibinfra.natskit import Conn, StreamBus
 from pylibinfra.tgbotkit.config import Config
 from pylibinfra.tgbotkit.extension import NotifierBundle
+from pylibinfra.tgbotkit.i18n import build_translator
 from pylibinfra.tgbotkit.notifications.delivery import Delivery
 from pylibinfra.tgbotkit.notifications.runner import NotificationRunner
 from pylibinfra.tgbotkit.storage import build_isolation
@@ -89,7 +90,12 @@ class _BaseRunner:
                 "Add NatsProvider + a StreamBus provider to enable notifications."
             )
             return
-        delivery = Delivery(bg_factory, self._bot, self._log)
+        # translator для фона строится отдельно от middleware-translator'а: фон идёт вне
+        # dp.update, где I18nMiddleware не отрабатывает (deliver_* локализует через Delivery).
+        translator = build_translator(self._cfg.i18n)
+        delivery = Delivery(
+            bg_factory, self._bot, self._log, translator, self._cfg.i18n.default_locale
+        )
         self._notif = NotificationRunner(self._bus, delivery, self._notifiers, self._log)
         await self._notif.start()
 

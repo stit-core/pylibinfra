@@ -12,7 +12,7 @@ from .resolver import (
     LocalePrefStore,
     LocaleResolver,
 )
-from .translator import FluentTranslator, FormatFunc, Translator
+from .translator import FluentTranslator, FormatFunc, Translator, build_translator
 
 __all__ = [
     "I18N_FORMAT_KEY",
@@ -26,5 +26,6 @@ __all__ = [
     "LocalePrefStore",
     "LocaleResolver",
     "Translator",
+    "build_translator",
     "install_i18n",
 ]

@@ -33,6 +33,7 @@ from .i18n import (
     LocalePrefStore,
     LocaleResolver,
     Translator,
+    build_translator,
     install_i18n,
 )
 from .metrics import TgInstruments, new_instruments
@@ -88,6 +89,7 @@ __all__ = [
     "answer_pre_checkout",
     "build_invoice",
     "build_runner",
+    "build_translator",
     "default_error_ux",
     "install_i18n",
     "new_config",

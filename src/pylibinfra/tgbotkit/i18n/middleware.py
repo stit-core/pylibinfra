@@ -16,7 +16,7 @@ from pylibinfra.tgbotkit.config import I18nConfig
 
 from .format import I18N_FORMAT_KEY
 from .resolver import FromUserLanguage, LocaleResolver
-from .translator import FluentTranslator, Translator
+from .translator import Translator, build_translator
 
 Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
 
@@ -42,10 +42,9 @@ def install_i18n(
     translator: Translator | None = None,
     resolver: LocaleResolver | None = None,
 ) -> None:
+    translator = translator or build_translator(cfg)
     if translator is None:
-        if not cfg.locales_dir:
-            return  # i18n не настроен
-        translator = FluentTranslator(cfg.default_locale, cfg.locales_dir, cfg.resources)
+        return  # i18n не настроен
     dp.update.middleware(
         I18nMiddleware(translator, resolver or FromUserLanguage(), cfg.default_locale)
     )
