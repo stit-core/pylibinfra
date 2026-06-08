@@ -2,6 +2,7 @@ import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
+import asyncpg
 import pytest
 from testcontainers.postgres import PostgresContainer
 
@@ -79,5 +80,27 @@ async def test_record_nulls_empty_optionals(pg_dsn: str) -> None:
         assert row["resource_id"] is None
         assert row["metadata"] is None
         assert row["ip"] is None
+    finally:
+        await pool.close()
+
+
+async def test_audit_log_is_append_only(pg_dsn: str) -> None:
+    migrate_up(MigrateConfig(dsn=pg_dsn, path=migrations_path()))
+
+    pool = await new_pool(PoolConfig(dsn=pg_dsn, min_conns=1, max_conns=2))
+    try:
+        db = DB(pool)
+        await PgStore(db).record(Entry(action="login", resource="session", request_id="ap-1"))
+
+        # триггер роняет UPDATE/DELETE на уровне БД — аудит нельзя подделать/вычистить
+        with pytest.raises(asyncpg.exceptions.RaiseError):
+            await db.execute("UPDATE audit_log SET action = 'x' WHERE request_id = $1", "ap-1")
+        with pytest.raises(asyncpg.exceptions.RaiseError):
+            await db.execute("DELETE FROM audit_log WHERE request_id = $1", "ap-1")
+
+        # INSERT-only остался доступен
+        row = await db.fetchrow("SELECT action FROM audit_log WHERE request_id = $1", "ap-1")
+        assert row is not None
+        assert row["action"] == "login"
     finally:
         await pool.close()
