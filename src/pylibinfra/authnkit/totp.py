@@ -17,6 +17,8 @@ class TOTPGenerator:
         return secret, otpauth_url
 
     def verify(self, secret: str, code: str) -> bool:
-        ok = pyotp.TOTP(secret).verify(code)
+        # valid_window=1: принять код предыдущего/следующего 30с-окна — допуск на рассинхрон
+        # часов клиента и сервера; 0 ронял бы валидный код у границы окна.
+        ok = pyotp.TOTP(secret).verify(code, valid_window=1)
         record_totp_result("ok" if ok else "invalid")
         return ok
