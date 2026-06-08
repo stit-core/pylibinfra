@@ -45,6 +45,31 @@ def test_fluent_translator_falls_back_to_default_locale(tmp_path: Path) -> None:
     assert "English only" in fmt("only-en", None)
 
 
+def test_translator_normalizes_regional_code_to_base(tmp_path: Path) -> None:
+    (tmp_path / "pt").mkdir()
+    (tmp_path / "pt" / "main.ftl").write_text("hi = Olá\n", encoding="utf-8")
+    tr = FluentTranslator("en", str(tmp_path), ["main.ftl"])
+    # каталога pt-br нет → региональный код резолвится к базовому pt (и регистр игнорится)
+    assert "Olá" in tr.for_locale("pt-BR")("hi", None)
+
+
+def test_translator_unknown_locale_uses_default(tmp_path: Path) -> None:
+    (tmp_path / "en").mkdir()
+    (tmp_path / "en" / "main.ftl").write_text("hi = Hello\n", encoding="utf-8")
+    tr = FluentTranslator("en", str(tmp_path), ["main.ftl"])
+    assert "Hello" in tr.for_locale("zz-ZZ")("hi", None)
+
+
+def test_translator_cache_bounded_by_known_locales(tmp_path: Path) -> None:
+    (tmp_path / "en").mkdir()
+    (tmp_path / "en" / "main.ftl").write_text("hi = Hello\n", encoding="utf-8")
+    tr = FluentTranslator("en", str(tmp_path), ["main.ftl"])
+    for code in ("xx", "yy-1", "zz", "garbage", "ru-RU", "fr"):
+        tr.for_locale(code)("hi", None)
+    # произвольный language_code не растит кэш: все неизвестные резолвятся в default
+    assert set(tr._cache) == {"en"}
+
+
 def test_build_translator_none_without_locales_dir() -> None:
     assert build_translator(I18nConfig(locales_dir="")) is None
 

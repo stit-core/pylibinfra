@@ -1,7 +1,9 @@
 """Translator — движок переводов за Protocol (подменяем без правки I18NFormat).
-FluentTranslator грузит .ftl-каталоги (fluent.runtime): roots=<path>/{locale},
-per-locale FluentLocalization кэшируется; фолбэк-локаль добавляется в цепочку,
-чтобы недостающий ключ брался из дефолта, а не падал.
+FluentTranslator грузит .ftl-каталоги (fluent.runtime): roots=<path>/{locale}.
+Запрошенная локаль резолвится к каталогу из <path> (регистронезависимо; региональный
+код вроде pt-br → базовый pt), неизвестная → default. Кэш FluentLocalization ограничен
+числом каталогов локалей — произвольный language_code от юзера не растит его без предела.
+Фолбэк-локаль в цепочке: недостающий в локали ключ берётся из default, а не падает.
 """
 
 from __future__ import annotations
@@ -27,19 +29,40 @@ class FluentTranslator:
         self._loader = FluentResourceLoader(os.path.join(path, "{locale}"))
         self._resources = resources
         self._default = default_locale
+        self._known = _scan_locales(path)
         self._cache: dict[str, FluentLocalization] = {}
 
+    def _resolve(self, locale: str) -> str:
+        code = locale.lower()
+        if code in self._known:
+            return self._known[code]
+        base = code.split("-", 1)[0]  # региональный код (pt-br) → базовый язык (pt)
+        if base in self._known:
+            return self._known[base]
+        return self._default
+
     def _l10n(self, locale: str) -> FluentLocalization:
-        cached = self._cache.get(locale)
+        # ключ кэша — резолвнутый каталог (∈ known ∪ {default}): кэш не растёт от мусорных кодов
+        key = self._resolve(locale)
+        cached = self._cache.get(key)
         if cached is None:
-            # fallback на дефолт: недостающий в locale ключ возьмётся из default
-            locales = [locale] if locale == self._default else [locale, self._default]
+            # fallback на дефолт: недостающий в локали ключ возьмётся из default
+            locales = [key] if key == self._default else [key, self._default]
             cached = FluentLocalization(locales, self._resources, self._loader)
-            self._cache[locale] = cached
+            self._cache[key] = cached
         return cached
 
     def for_locale(self, locale: str) -> FormatFunc:
         return self._l10n(locale).format_value
+
+
+def _scan_locales(path: str) -> dict[str, str]:
+    """lowercase-код → имя каталога локали в <path> (для регистронезависимого матчинга)."""
+    try:
+        entries = os.listdir(path)
+    except OSError:
+        return {}
+    return {name.lower(): name for name in entries if os.path.isdir(os.path.join(path, name))}
 
 
 def build_translator(cfg: I18nConfig) -> Translator | None:
