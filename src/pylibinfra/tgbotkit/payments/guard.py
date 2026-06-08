@@ -47,3 +47,30 @@ class ChargeGuard:
 
     async def release(self, charge_id: str) -> None:
         await self._redis.delete(f"tg:charge:{charge_id}")
+
+
+class RefundGuard:
+    """Дедуп события refunded_payment по telegram_payment_charge_id (отдельный ключ
+    tg:refund:<id> — не пересекается с ChargeGuard). Reserve/commit/release как у
+    ChargeGuard: откат выдачи (revoke) по возврату выполняется ровно один раз; на
+    дубликате эмитит tg_payments_total{stage=refunded,result=duplicate}."""
+
+    def __init__(
+        self, client: redis.Redis, ttl: float = 604800.0, reserve_ttl: float = 60.0
+    ) -> None:
+        self._redis = client
+        self._ttl = max(int(ttl), 1)
+        self._reserve_ttl = max(int(reserve_ttl), 1)
+
+    async def reserve(self, charge_id: str) -> bool:
+        fresh = await self._redis.set(f"tg:refund:{charge_id}", b"1", nx=True, ex=self._reserve_ttl)
+        if fresh:
+            return True
+        _instr().payments_total.add(1, {"stage": "refunded", "result": "duplicate"})
+        return False
+
+    async def commit(self, charge_id: str) -> None:
+        await self._redis.set(f"tg:refund:{charge_id}", b"1", ex=self._ttl)
+
+    async def release(self, charge_id: str) -> None:
+        await self._redis.delete(f"tg:refund:{charge_id}")

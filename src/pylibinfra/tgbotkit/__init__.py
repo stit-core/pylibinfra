@@ -51,11 +51,22 @@ from .notifications import (
     NotificationRouter,
     NotificationRunner,
 )
-from .payments import ChargeGuard, answer_pre_checkout, build_invoice
+from .payments import (
+    STARS_SUBSCRIPTION_PERIOD,
+    ChargeGuard,
+    Money,
+    PreCheckoutDecision,
+    RefundGuard,
+    answer_pre_checkout,
+    build_invoice,
+    build_subscription_link,
+    refund_charge,
+)
 from .runner import BotRunner, PollingRunner, WebhookRunner, build_runner
 from .webapp import InitDataError, validate_init_data
 
 __all__ = [
+    "STARS_SUBSCRIPTION_PERIOD",
     "BotProvider",
     "BotRunner",
     "ChainResolver",
@@ -74,6 +85,7 @@ __all__ = [
     "InitDataError",
     "LocalePrefStore",
     "LocaleResolver",
+    "Money",
     "NotificationRouter",
     "NotificationRunner",
     "Notifier",
@@ -82,6 +94,8 @@ __all__ = [
     "OptionalStreamBus",
     "OptionalTranslator",
     "PollingRunner",
+    "PreCheckoutDecision",
+    "RefundGuard",
     "RouterBundle",
     "TgInstruments",
     "Translator",
@@ -89,12 +103,14 @@ __all__ = [
     "answer_pre_checkout",
     "build_invoice",
     "build_runner",
+    "build_subscription_link",
     "build_translator",
     "default_error_ux",
     "install_i18n",
     "new_config",
     "new_instruments",
     "probe",
+    "refund_charge",
     "register_error_handlers",
     "validate_init_data",
 ]
