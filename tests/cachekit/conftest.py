@@ -46,6 +46,15 @@ class FakeRedis:
     async def smembers(self, key: str) -> set[bytes]:
         return set(self._sets.get(key, set()))
 
+    async def eval(self, script: str, numkeys: int, *keys_and_args: str) -> int:
+        # фейк поддерживает единственный скрипт RedisCache — invalidate_by_tag: SMEMBERS+DEL
+        tag_key = keys_and_args[0]
+        members = self._sets.get(tag_key, set())
+        for m in members:
+            self._kv.pop(m.decode() if isinstance(m, bytes) else m, None)
+        self._sets.pop(tag_key, None)
+        return len(members)
+
     async def expire(self, key: str, ttl: timedelta) -> bool:
         return key in self._kv or key in self._sets
 

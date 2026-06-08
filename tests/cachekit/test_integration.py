@@ -54,6 +54,13 @@ async def test_invalidate_by_tag(cache: RedisCache) -> None:
     assert fb is False
 
 
+async def test_invalidate_by_tag_clears_tag_set_and_noop_when_missing(cache: RedisCache) -> None:
+    await cache.set("a", b"1", tags=["grp"])
+    await cache.invalidate_by_tag("grp")
+    assert await cache._client.exists("tag:grp") == 0  # tag-сет снят, не осиротел
+    await cache.invalidate_by_tag("missing")  # несуществующий тег — no-op, не падает
+
+
 async def test_idempotency_roundtrip(cache: RedisCache) -> None:
     store = CacheIdempotencyStore(cache, timedelta(minutes=5))
     await store.set("req-1", b'{"ok":true}', 201)

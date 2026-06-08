@@ -14,6 +14,18 @@ import redis.asyncio as redis
 
 _TAG_PREFIX = "tag:"
 
+# invalidate_by_tag атомарно: SMEMBERS + DEL под одним EVAL. Иначе между чтением сета и его
+# удалением конкурентный set(tags=) делает sadd нового ключа, который тут же теряется (tag_key
+# удаляется) — запись остаётся без тега и больше не инвалидируется (escape от инвалидации).
+_INVALIDATE_TAG_LUA = """
+local members = redis.call('SMEMBERS', KEYS[1])
+for i = 1, #members do
+    redis.call('DEL', members[i])
+end
+redis.call('DEL', KEYS[1])
+return #members
+"""
+
 
 @runtime_checkable
 class Cache(Protocol):
@@ -64,12 +76,7 @@ class RedisCache:
         await self._client.delete(*keys)
 
     async def invalidate_by_tag(self, tag: str) -> None:
-        tag_key = _TAG_PREFIX + tag
-        members = await self._client.smembers(tag_key)
-        keys = [m.decode() if isinstance(m, bytes) else m for m in members]
-        if keys:
-            await self._client.delete(*keys)
-        await self._client.delete(tag_key)
+        await self._client.eval(_INVALIDATE_TAG_LUA, 1, _TAG_PREFIX + tag)
 
     async def ping(self) -> None:
         await self._client.ping()
