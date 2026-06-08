@@ -92,8 +92,9 @@ class BotProvider(Provider):
         await b.session.close()  # после container.close (lifecycle 06 §5)
 
     @provide
-    def storage(self, client: redis.Redis) -> RedisStorage:
-        return build_storage(client)
+    def storage(self, client: redis.Redis, cfg: Config) -> RedisStorage:
+        # один BOT_STATE_TTL гонит и state, и dialog_data — висящий диалог протухает целиком
+        return build_storage(client, cfg.state_ttl, cfg.state_ttl)
 
     @provide
     def dispatcher(

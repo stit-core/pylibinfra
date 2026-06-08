@@ -11,10 +11,13 @@ from aiogram.fsm.storage.base import DefaultKeyBuilder
 from aiogram.fsm.storage.redis import RedisEventIsolation, RedisStorage
 
 
-def build_storage(client: redis.Redis) -> RedisStorage:
+def build_storage(client: redis.Redis, state_ttl: int = 0, data_ttl: int = 0) -> RedisStorage:
+    # 0 → None: aiogram трактует None как «без TTL» (ключи живут вечно)
     return RedisStorage(
         client,
         key_builder=DefaultKeyBuilder(with_bot_id=True, with_destiny=True),
+        state_ttl=state_ttl or None,
+        data_ttl=data_ttl or None,
     )
 
 

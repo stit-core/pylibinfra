@@ -37,6 +37,9 @@ class Config(BaseSettings):
     dedup_ttl: float = Field(default=600.0, validation_alias="BOT_DEDUP_TTL")
     # per-user троттлинг апдейтов; 0 = off (как rate-limit у httpkit)
     throttle_rps: int = Field(default=0, validation_alias="BOT_THROTTLE_RPS")
+    # TTL FSM-стейта/dialog_data в redis (секунды); 0 = вечно (дефолт aiogram). >0 даёт
+    # дочистку висящих диалогов и deprecated State, иначе ключи копятся в redis навсегда.
+    state_ttl: int = Field(default=0, validation_alias="BOT_STATE_TTL")
 
     # исходящий rate-limit/ordering/429-retry (OutgoingThrottleMiddleware на bot.session)
     flood_enabled: bool = Field(default=True, validation_alias="BOT_FLOOD_ENABLED")
