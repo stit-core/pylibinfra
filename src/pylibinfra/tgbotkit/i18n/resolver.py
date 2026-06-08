@@ -26,7 +26,7 @@ class FromUserLanguage:
 
 
 class LocalePrefStore:
-    """Хранилище явного выбора локали в cachekit (link:locale:<user_id>)."""
+    """Хранилище явного выбора локали в cachekit (ключ locale:<user_id>)."""
 
     def __init__(self, cache: Cache, ttl: timedelta | None = None) -> None:
         self._cache = cache
