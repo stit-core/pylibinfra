@@ -85,7 +85,7 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | `httpkit` | FastAPI bootstrap; middleware: RequestID, Recovery, AccessLog, OTel, CORS, RateLimit, MaxBody, Metrics, Auth, **SecurityHeaders**, **Idempotency**; `APIError`, `map_err`, `map_sentinel`; `dishka_lifespan`, `shared_secret_guard` (для вебхуков) |
 | `natskit` | Pub/sub поверх NATS: `Bus`, `publish_json`, `subscribe_json`, Provider; panic recovery + backpressure (`NATS_MAX_IN_FLIGHT`) |
 | `tgbotkit` | aiogram-bootstrap (как httpkit для FastAPI): `BotProvider`, polling/webhook `BotRunner`, outer-цепочка (request-id/dedup/throttle/RED+span/recovery), error-UX, `setup_dialogs`; точки расширения `RouterBundle`/`CommandBundle`/`NotifierBundle`/`ErrorUX`; подсистемы i18n (fluent)/notifications (JetStream)/payments (XTR)/webapp (initData). **extra `[tgbotkit]`** (aiogram, aiogram-dialog, fluent.runtime) |
-| `httpclient` | HTTP-клиент поверх httpx с retry (tenacity), circuit breaker (purgatory), OTel и автопередачей `X-Request-ID` |
+| `httpclient` | HTTP-клиент поверх httpx с retry (tenacity), circuit breaker (purgatory), OTel и автопередачей `X-Request-ID`; `ApiClient` — JSON-слой с typed-ошибками, `Idempotency-Key` и именованными бэкендами (`ApiClients`) |
 | `cachekit` | Redis-обёртка: `Cache`, `get_json`/`set_json`, `invalidate_by_tag`; `IdempotencyStore` для `httpkit` |
 | `flagkit` | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.bool/str` |
 | `timerkit` | Periodic jobs через asyncio: регистрация задач с интервалом, lifecycle-aware |
@@ -197,6 +197,7 @@ logins.add(1, {"result": "ok"})
 `httpkit.SecurityHeadersConfig`, `httpkit.IdempotencyConfig`, `telemetry.Config`,
 `logkit.Config`, `logkit.RedactConfig`, `authnkit.Argon2idParams`,
 `cachekit.Config`, `flagkit.Config`, `natskit.Config`, `httpclient.BreakerConfig`,
+`httpclient.BackendsConfig`,
 `httpkit.SharedSecretConfig`, `tgbotkit.Config`, `tgbotkit.I18nConfig`,
 `config.VaultClientConfig`) — **part of public API**. Менять имена полей или их
 env-alias'ы = breaking change, идёт мажорным апгрейдом.

@@ -15,3 +15,17 @@ class Config(BaseSettings):
     base_url: str = Field(default="", validation_alias="HTTPCLIENT_BASE_URL")
 
     breaker: BreakerConfig = Field(default_factory=lambda: BreakerConfig())
+
+
+class BackendsConfig(BaseSettings):
+    """Именованные бэкенды: name → Config (свой base_url/timeout/breaker на каждый).
+
+    Caller заполняет программно из своих env (asymmetry note) либо одной env-переменной
+    HTTPCLIENT_BACKENDS='{"crm": {"base_url": "..."}}' (JSON).
+    """
+
+    model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
+
+    backends: dict[str, Config] = Field(
+        default_factory=dict, validation_alias="HTTPCLIENT_BACKENDS"
+    )
