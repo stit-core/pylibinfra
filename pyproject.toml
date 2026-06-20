@@ -74,6 +74,14 @@ tgbotkit = [
     "aiogram-dialog>=2.6,<3",
     "fluent.runtime>=0.4,<0.5",
 ]
+# grpckit шипится в пакете, но grpcio нужен только тем, кто строит gRPC-сервис
+# (sidecar-инференс и т.п.): `uv add "pylibinfra[grpckit]"` (паттерн tgbotkit).
+# gRPC — нишевый transport (как aiogram у бота), HTTP-консьюмеры его не тянут.
+grpckit = [
+    "grpcio>=1.68,<2",
+    "grpcio-health-checking>=1.68,<2",
+    "opentelemetry-instrumentation-grpc>=0.63b1",
+]
 
 [project.urls]
 Homepage = "https://git.stit.tech/stit-core/pylibinfra"
@@ -95,6 +103,10 @@ dev = [
     "aiogram>=3.28,<4",
     "aiogram-dialog>=2.6,<3",
     "fluent.runtime>=0.4,<0.5",
+    # grpckit (extra [grpckit]) — в dev, чтобы mypy src и pytest видели grpc
+    "grpcio>=1.68,<2",
+    "grpcio-health-checking>=1.68,<2",
+    "opentelemetry-instrumentation-grpc>=0.63b1",
 ]
 
 [build-system]
@@ -162,6 +174,14 @@ init_forbid_extra = true
 # импорте (used by tgbotkit.i18n). Стабов на PyPI нет; гасим missing-imports.
 [[tool.mypy.overrides]]
 module = "fluent.*"
+ignore_missing_imports = true
+
+# grpc/grpc.aio: grpcio не поставляет py.typed, а сторонние grpc-stubs типизируют
+# grpc.aio как sync (фундаментальные несовпадения) — больше вреда, чем пользы;
+# трактуем как Any (как fluent.*). grpc_health и otel-grpc-instrumentation тоже
+# untyped. Used by grpckit.{server,interceptors,health}.
+[[tool.mypy.overrides]]
+module = ["grpc", "grpc.*", "grpc_health.*", "opentelemetry.instrumentation.grpc.*"]
 ignore_missing_imports = true
 
 # ── pytest (аналог `go test`; integration ≈ снятие -short) ────────────────────

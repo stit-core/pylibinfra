@@ -85,6 +85,7 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | `httpkit` | FastAPI bootstrap; middleware: RequestID, Recovery, AccessLog, OTel, CORS, RateLimit, MaxBody, Metrics, Auth, **SecurityHeaders**, **Idempotency**; `APIError`, `map_err`, `map_sentinel`; `dishka_lifespan`, `shared_secret_guard` (для вебхуков) |
 | `natskit` | Pub/sub поверх NATS: `Bus`, `publish_json`, `subscribe_json`, Provider; panic recovery + backpressure (`NATS_MAX_IN_FLIGHT`) |
 | `tgbotkit` | aiogram-bootstrap (как httpkit для FastAPI): `BotProvider`, polling/webhook `BotRunner`, outer-цепочка (request-id/dedup/throttle/RED+span/recovery), error-UX, `setup_dialogs`; точки расширения `RouterBundle`/`CommandBundle`/`NotifierBundle`/`ErrorUX`; подсистемы i18n (fluent)/notifications (JetStream)/payments (XTR)/webapp (initData). **extra `[tgbotkit]`** (aiogram, aiogram-dialog, fluent.runtime) |
+| `grpckit` | grpc.aio-сервер (как httpkit для FastAPI): `GrpcProvider`, `Server` (bind UDS и/или TCP, graceful-drain), интерсепторы OTel-трейс + observability (метрики/access-log/recovery), стандартный `grpc.health.v1`; точки расширения `ServicerBundle` (регистраторы servicer'ов консьюмера) / `ProbeBundle` (readiness). **extra `[grpckit]`** (grpcio, grpcio-health-checking, opentelemetry-instrumentation-grpc) |
 | `httpclient` | HTTP-клиент поверх httpx с retry (tenacity), circuit breaker (purgatory), OTel и автопередачей `X-Request-ID`; `ApiClient` — JSON-слой с typed-ошибками, `Idempotency-Key` и именованными бэкендами (`ApiClients`) |
 | `cachekit` | Redis-обёртка: `Cache`, `get_json`/`set_json`, `invalidate_by_tag`; `IdempotencyStore` для `httpkit` |
 | `flagkit` | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.bool/str` |
@@ -180,6 +181,7 @@ logins.add(1, {"result": "ok"})
 | `storagekit` | — | — |
 | `natskit` | `nats_messages_*`, `nats_{publish,handle}_duration_seconds`, `nats_inflight_messages` | producer + consumer spans (trace-propagation) |
 | `tgbotkit` | `tg_updates_total{type,result}`, `tg_update_duration_seconds`, `tg_update_panics_total`, `tg_updates_deduped_total`, `tg_payments_total{stage,result}` | per-update span `tg.update {type}` (сшивается с webhook-span httpkit) |
+| `grpckit` | `grpc_server_requests_total{grpc_method,grpc_code}`, `grpc_server_request_duration_seconds`, `grpc_server_panics_total` | server span (otel-grpc-instrumentation) |
 | `outboxkit` | `outbox_events_*`, `outbox_batch_*`, `outbox_publish_duration_seconds`, `outbox_lag_seconds` (opt-in) | worker span |
 | `authnkit` | `jwt_verifications_total`, `password_*_duration_seconds`, `totp_verifications_total` | — |
 | `bizmetric` | `biz_<domain>_<event>_total\|_seconds\|<gauge>` | — |
@@ -199,7 +201,7 @@ logins.add(1, {"result": "ok"})
 `cachekit.Config`, `flagkit.Config`, `natskit.Config`, `httpclient.BreakerConfig`,
 `httpclient.BackendsConfig`,
 `httpkit.SharedSecretConfig`, `tgbotkit.Config`, `tgbotkit.I18nConfig`,
-`config.VaultClientConfig`) — **part of public API**. Менять имена полей или их
+`grpckit.Config`, `config.VaultClientConfig`) — **part of public API**. Менять имена полей или их
 env-alias'ы = breaking change, идёт мажорным апгрейдом.
 
 ## Версионирование
