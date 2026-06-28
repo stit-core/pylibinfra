@@ -56,6 +56,17 @@ class Server:
             options=[
                 ("grpc.max_receive_message_length", cfg.max_recv_bytes),
                 ("grpc.max_send_message_length", cfg.max_send_bytes),
+                # keepalive-enforcement: принимать клиентский keepalive (golibinfra
+                # шлёт пинги с PermitWithoutStream=true). Без этого gRPC-дефолты
+                # рвут idle-коннект GOAWAY too_many_pings в паузах между RPC.
+                # min_ping_interval ниже client Time(30с); max_ping_strikes=0 снимает
+                # порог страйков (belt-and-suspenders).
+                ("grpc.keepalive_permit_without_calls", int(cfg.keepalive_permit_without_calls)),
+                (
+                    "grpc.http2.min_ping_interval_without_data_ms",
+                    int(cfg.keepalive_min_ping_interval * 1000),
+                ),
+                ("grpc.http2.max_ping_strikes", 0),
             ],
         )
         self._health.register(self._server)

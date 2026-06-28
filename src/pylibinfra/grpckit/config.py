@@ -28,6 +28,19 @@ class Config(BaseSettings):
     max_recv_bytes: int = Field(default=_DEFAULT_MAX_BYTES, validation_alias="GRPC_MAX_RECV_BYTES")
     max_send_bytes: int = Field(default=_DEFAULT_MAX_BYTES, validation_alias="GRPC_MAX_SEND_BYTES")
 
+    # keepalive-enforcement. Клиент (golibinfra/grpcclient) шлёт keepalive-пинги
+    # с PermitWithoutStream=true. Без этих опций gRPC-дефолты сервера штрафуют
+    # пинги в idle-транспорте (permit_without_calls=0, порог 2 ч) и через 2 страйка
+    # шлют GOAWAY too_many_pings, рвя соединение в паузах между RPC. Разрешаем
+    # пинги без активных вызовов и держим min-интервал ниже client Time (30 с).
+    keepalive_permit_without_calls: bool = Field(
+        default=True, validation_alias="GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS"
+    )
+    # минимальный интервал между пингами клиента, секунды (зеркалит стиль таймаутов).
+    keepalive_min_ping_interval: float = Field(
+        default=10.0, validation_alias="GRPC_KEEPALIVE_MIN_PING_INTERVAL"
+    )
+
 
 def new_config() -> Config:
     return Config()
