@@ -38,8 +38,10 @@ class _Configs(Provider):
 
 async def test_full_container_wiring(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OTEL_SERVICE_NAME", "di-test")
-    monkeypatch.setenv("OTEL_STDOUT_ONLY", "true")
     monkeypatch.setenv("FEATURE_FLAGS", "x=true")
+    # Коллектора в CI нет — короткий OTLP-таймаут, чтобы flush на close() не
+    # ретраил connection-refused до дефолтного 10s-дедлайна.
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TIMEOUT", "1")
 
     container = make_async_container(
         TelemetryProvider(),

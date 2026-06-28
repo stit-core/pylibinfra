@@ -24,5 +24,3 @@ class Config(BaseSettings):
 
     # Если задан — добавляется как `Authorization: Bearer ...` к OTLP-запросам.
     otlp_bearer_token: str = Field(default="", validation_alias="OTEL_TOKEN")
-
-    stdout_only: bool = Field(default=False, validation_alias="OTEL_STDOUT_ONLY")

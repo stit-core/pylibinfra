@@ -91,7 +91,7 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | `flagkit` | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.bool/str` |
 | `timerkit` | Periodic jobs через asyncio: регистрация задач с интервалом, lifecycle-aware |
 | `telemetry` | OTel init (trace/meter/log), OTLP exporters, `span(name)` контекст-менеджер |
-| `logkit` | `Logger` поверх structlog; trace_id correlation; авто-атрибуты `service/env/version`; `register_attr`; redact (PII-фильтры) |
+| `logkit` | `Logger` поверх structlog; fan-out OTLP→Loki + JSON-stdout (`LOG_STDOUT`); trace_id correlation; redact (PII-фильтры) |
 | `authnkit` | `Hasher` (Argon2id); `JWTConfig` + sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`has` для RBAC |
 | `bizmetric` | Helper для бизнес-метрик: `counter/histogram/gauge`, форсит конвенцию `biz_<domain>_<event>_*` (raise при нарушении) |
 | `outboxkit` | Transactional outbox: Worker, Bus, core+pgstore split, `LagReporter` для `outbox_lag_seconds` |
@@ -109,7 +109,7 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 
 | Env | Кит | Назначение |
 |---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `telemetry` | OTLP-ingest коллектора (пусто / `OTEL_STDOUT_ONLY=true` → stdout) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `telemetry` | OTLP-ingest коллектора (host:port; без коллектора экспорт молча дропается — метрики/трейсы в stdout не пишутся) |
 | `VAULT_ADDR` | `config` | Vault как secret-source |
 | `PG_DSN` | `pgkit` | Postgres (primary) |
 | `PG_REPLICA_DSN` | `pgkit` | Postgres read-replica (опц.; `ReadWriteDB`) |
@@ -136,7 +136,7 @@ from pylibinfra.natskit import NatsProvider
 
 container = make_async_container(
     TelemetryProvider(),   # OTLP exporter + runtime (system_*, runtime metrics)
-    LogkitProvider(),      # log_messages_total{level}, structlog с trace_id
+    LogkitProvider(),      # log_messages_total{level}, structlog с trace_id (OTLP + stdout)
     HttpProvider(),        # http_requests_total, http_request_duration_seconds
     PgProvider(),          # db_pool_* (acquired/idle/max/wait), pg traces
     NatsProvider(),        # nats_messages_*, nats_handle_duration_seconds

@@ -8,7 +8,7 @@ from pylibinfra.logkit import Config, RedactConfig, configure, new_logger
 
 
 def _last_record(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
-    lines = capsys.readouterr().err.strip().splitlines()
+    lines = capsys.readouterr().out.strip().splitlines()
     record: dict[str, Any] = json.loads(lines[-1])
     return record
 
@@ -81,3 +81,12 @@ def test_injects_trace_context(capsys: pytest.CaptureFixture[str]) -> None:
     rec = _last_record(capsys)
     assert len(rec["trace_id"]) == 32
     assert len(rec["span_id"]) == 16
+
+
+def test_stdout_disabled_no_output(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LOG_STDOUT", "false")
+    configure(Config(), redact_cfg=RedactConfig(), use_otel=False)
+    new_logger().info("should not reach stdout")
+    assert capsys.readouterr().out.strip() == ""

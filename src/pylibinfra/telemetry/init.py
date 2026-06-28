@@ -1,10 +1,13 @@
 """Bootstrap OTel SDK: tracer/meter/logger providers, OTLP HTTP-экспортёры
-(с Bearer-токеном для корп ingest) или stdout-fallback для local-dev.
+(с Bearer-токеном для корп ingest) всех трёх сигналов.
 
 Выставляет resource-атрибуты service.name, service.version,
 deployment.environment.name из Config; tenant/service.namespace — только если
 Config.tenant задан (типично local-dev), иначе их force-сетит корп
 otel-collector. Включает system-метрики через SystemMetricsInstrumentor.
+
+Метрики и трейсы идут только в OTLP — в stdout их нет; stdout-копию логов даёт
+logkit.
 """
 
 from __future__ import annotations
@@ -21,23 +24,12 @@ from opentelemetry.instrumentation.system_metrics import SystemMetricsInstrument
 from opentelemetry.propagate import set_global_textmap
 from opentelemetry.propagators.composite import CompositePropagator
 from opentelemetry.sdk._logs import LoggerProvider
-from opentelemetry.sdk._logs.export import (
-    BatchLogRecordProcessor,
-    ConsoleLogRecordExporter,
-    SimpleLogRecordProcessor,
-)
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import (
-    ConsoleMetricExporter,
-    PeriodicExportingMetricReader,
-)
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import (
-    BatchSpanProcessor,
-    ConsoleSpanExporter,
-    SimpleSpanProcessor,
-)
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
@@ -58,7 +50,7 @@ class Providers:
 
 def init(cfg: Config) -> Providers:
     res = _resource(cfg)
-    providers = _init_stdout(res) if cfg.stdout_only else _init_otlp(cfg, res)
+    providers = _init_otlp(cfg, res)
 
     trace.set_tracer_provider(providers.tracer_provider)
     metrics.set_meter_provider(providers.meter_provider)
@@ -128,22 +120,5 @@ def _init_otlp(cfg: Config, res: Resource) -> Providers:
             OTLPLogExporter(endpoint=_otlp_url(cfg, "v1/logs"), headers=headers)
         )
     )
-
-    return Providers(tracer_provider=tp, meter_provider=mp, logger_provider=lp)
-
-
-def _init_stdout(res: Resource) -> Providers:
-    """Dev-режим: все три сигнала в stdout через Console-exporters с Simple-
-    процессорами (flush на каждую запись — видно сразу, без батча)."""
-    tp = TracerProvider(resource=res)
-    tp.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
-
-    mp = MeterProvider(
-        resource=res,
-        metric_readers=[PeriodicExportingMetricReader(ConsoleMetricExporter())],
-    )
-
-    lp = LoggerProvider(resource=res)
-    lp.add_log_record_processor(SimpleLogRecordProcessor(ConsoleLogRecordExporter()))
 
     return Providers(tracer_provider=tp, meter_provider=mp, logger_provider=lp)

@@ -1,5 +1,6 @@
-"""Конфигурация structlog → stdlib logging: structured-вывод в stdout (JSON) и
-параллельный экспорт в OTel LoggerProvider через LoggingHandler. Trace-context и
+"""Конфигурация structlog → stdlib logging: fan-out записи в JSON-stdout (при
+LOG_STDOUT) и в OTel LoggerProvider через LoggingHandler (при use_otel).
+Метрики/трейсы в stdout не идут — это только log pipeline. Trace-context и
 счётчик log_messages_total — processor'ы в общей цепочке.
 """
 
@@ -7,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from datetime import UTC, datetime
 from typing import Any
 
@@ -99,9 +101,10 @@ def configure(
     root = logging.getLogger()
     for handler in list(root.handlers):
         root.removeHandler(handler)
-    stream = logging.StreamHandler()
-    stream.setFormatter(_JsonFormatter())
-    root.addHandler(stream)
+    if cfg.stdout:
+        stream = logging.StreamHandler(sys.stdout)
+        stream.setFormatter(_JsonFormatter())
+        root.addHandler(stream)
     if use_otel:
         root.addHandler(LoggingHandler(logger_provider=get_logger_provider()))
     root.setLevel(_LEVELS.get(cfg.level.lower(), logging.INFO))
