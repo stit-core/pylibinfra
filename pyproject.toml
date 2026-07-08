@@ -1,6 +1,6 @@
 [project]
 name = "pylibinfra"
-version = "0.3.0"
+version = "0.4.0"
 description = "Инфраструктурные Python-kit'ы с observability из коробки"
 readme = "README.md"
 requires-python = ">=3.12"
