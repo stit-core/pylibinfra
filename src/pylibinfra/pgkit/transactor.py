@@ -33,6 +33,13 @@ def conn(pool: Pool) -> Executor:
     return pool  # type: ignore[no-any-return]
 
 
+def in_tx() -> bool:
+    """True, если текущий asyncio-таск исполняется внутри Transactor.with_tx (есть
+    захваченное tx-соединение). Нужно, например, outboxkit WithRequireTx, чтобы
+    гарантировать атомарную запись события с бизнес-стейтом."""
+    return _current_conn.get() is not None
+
+
 class PoolTransactor:
     def __init__(self, pool: Pool) -> None:
         self._pool = pool

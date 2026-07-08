@@ -83,7 +83,7 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | `pgkit` | `DB`-фасад поверх asyncpg, `Transactor` (через `contextvars`), migrate-runner (yoyo), маппинг pg-ошибок, `DBProbe` health-probe; `ReadWriteDB` для read-replica (`PG_REPLICA_DSN`) |
 | `storagekit` | S3/object storage поверх aioboto3: `Storage` (`put`/`delete`), `URLBuilder`, in-memory адаптер для тестов, `s3`-подпакет; `Config` + `new_key` (uuidv7 + ext) |
 | `httpkit` | FastAPI bootstrap; middleware: RequestID, Recovery, AccessLog, OTel, CORS, RateLimit, MaxBody, Metrics, Auth, **SecurityHeaders**, **Idempotency**; `APIError`, `map_err`, `map_sentinel`; `dishka_lifespan`, `shared_secret_guard` (для вебхуков) |
-| `natskit` | Pub/sub поверх NATS: `Bus`, `publish_json`, `subscribe_json`, Provider; panic recovery + backpressure (`NATS_MAX_IN_FLIGHT`) |
+| `natskit` | Pub/sub поверх NATS: `Bus` (`subscribe`/`subscribe_queue`), `publish_json`/`subscribe_json`/`subscribe_queue_json`, опц. JetStream `StreamBus` (батч-async публикация + дедуп по `Nats-Msg-Id`; poison-обработка `NATS_JS_MAX_DELIVER`→DLQ/term, NAK с backoff), subject/headers сообщения через `subject_from_context()`/`headers_from_context()`; panic recovery + backpressure (`NATS_MAX_IN_FLIGHT`) |
 | `tgbotkit` | aiogram-bootstrap (как httpkit для FastAPI): `BotProvider`, polling/webhook `BotRunner`, outer-цепочка (request-id/dedup/throttle/RED+span/recovery), error-UX, `setup_dialogs`; точки расширения `RouterBundle`/`CommandBundle`/`NotifierBundle`/`ErrorUX`; подсистемы i18n (fluent)/notifications (JetStream)/payments (XTR)/webapp (initData). **extra `[tgbotkit]`** (aiogram, aiogram-dialog, fluent.runtime) |
 | `grpckit` | grpc.aio-сервер (как httpkit для FastAPI): `GrpcProvider`, `Server` (bind UDS и/или TCP, graceful-drain), интерсепторы OTel-трейс + observability (метрики/access-log/recovery), стандартный `grpc.health.v1`; точки расширения `ServicerBundle` (регистраторы servicer'ов консьюмера) / `ProbeBundle` (readiness). **extra `[grpckit]`** (grpcio, grpcio-health-checking, opentelemetry-instrumentation-grpc) |
 | `httpclient` | HTTP-клиент поверх httpx с retry (tenacity), circuit breaker (purgatory), OTel и автопередачей `X-Request-ID`; `ApiClient` — JSON-слой с typed-ошибками, `Idempotency-Key` и именованными бэкендами (`ApiClients`) |
@@ -94,7 +94,7 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | `logkit` | `Logger` поверх structlog; fan-out OTLP→Loki + JSON-stdout (`LOG_STDOUT`); trace_id correlation; redact (PII-фильтры) |
 | `authnkit` | `Hasher` (Argon2id); `JWTConfig` + sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`has` для RBAC |
 | `bizmetric` | Helper для бизнес-метрик: `counter/histogram/gauge`, форсит конвенцию `biz_<domain>_<event>_*` (raise при нарушении) |
-| `outboxkit` | Transactional outbox: Worker, Bus, core+pgstore split, `LagReporter` для `outbox_lag_seconds` |
+| `outboxkit` | Transactional outbox: `Worker` публикует в JetStream через `Transport` (`OUTBOX_PUBLISH_MODE` batch\|ordered), `Bus`, multi-instance `Outbox`, core+pgstore split; poison→dead (`OUTBOX_MAX_ATTEMPTS`), retention (`OUTBOX_RETENTION_MONTHS`), `BacklogReporter` для `outbox_lag_seconds`/`outbox_pending_count` |
 | `auditkit` | Audit-log: `Entry`/`Recorder`, core+pgstore split |
 | `bruteforcekit` | Brute-force guard: per-subject + per-IP счётчики, `LockState`, core+pgstore split |
 | `clockkit` | `Clock` + test-fakes (`Fixed`, `Tickable`) для детерминированных временных тестов |
@@ -179,10 +179,10 @@ logins.add(1, {"result": "ok"})
 | `httpclient` | `http_client_request_duration_seconds`, `http_client_breaker_*`, `http_client_retry_attempts_total` | client span |
 | `pgkit` | `db_pool_*` | per-query span (otel-asyncpg) |
 | `storagekit` | — | — |
-| `natskit` | `nats_messages_*`, `nats_{publish,handle}_duration_seconds`, `nats_inflight_messages` | producer + consumer spans (trace-propagation) |
+| `natskit` | `nats_messages_{published,consumed}_total` (consumed status: `ok\|handler_error\|panic\|dead`), `nats_{publish,handle}_duration_seconds`, `nats_inflight_messages` | producer + consumer spans (trace-propagation) |
 | `tgbotkit` | `tg_updates_total{type,result}`, `tg_update_duration_seconds`, `tg_update_panics_total`, `tg_updates_deduped_total`, `tg_payments_total{stage,result}` | per-update span `tg.update {type}` (сшивается с webhook-span httpkit) |
 | `grpckit` | `grpc_server_requests_total{grpc_method,grpc_code}`, `grpc_server_request_duration_seconds`, `grpc_server_panics_total` | server span (otel-grpc-instrumentation) |
-| `outboxkit` | `outbox_events_*`, `outbox_batch_*`, `outbox_publish_duration_seconds`, `outbox_lag_seconds` (opt-in) | worker span |
+| `outboxkit` | `outbox_events_{inserted,processed,dead}_total`, `outbox_batch_*`, `outbox_publish_duration_seconds`, `outbox_lag_seconds`/`outbox_pending_count` (opt-in) | worker span |
 | `authnkit` | `jwt_verifications_total`, `password_*_duration_seconds`, `totp_verifications_total` | — |
 | `bizmetric` | `biz_<domain>_<event>_total\|_seconds\|<gauge>` | — |
 

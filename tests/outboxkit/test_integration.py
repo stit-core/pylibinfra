@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 
 import pytest
 from testcontainers.postgres import PostgresContainer
 
-from pylibinfra.outboxkit.pgstore import PgStore, migrations_path
+from pylibinfra.outboxkit import Failure
+from pylibinfra.outboxkit.pgstore import PgStore, migrations_path, new_store_for, schema_sql
 from pylibinfra.pgkit import DB, MigrateConfig, PoolConfig, PoolTransactor, migrate_up, new_pool
 
 pytestmark = pytest.mark.integration
@@ -29,15 +31,68 @@ async def _store(pg_dsn: str) -> tuple[PgStore, PoolTransactor, object]:
 async def test_happy_path(pg_dsn: str) -> None:
     store, _, pool = await _store(pg_dsn)
     try:
+        await pool.execute("TRUNCATE outbox")  # type: ignore[attr-defined]
         await store.insert("user.created", {"foo": "bar", "n": 7})
 
         msgs = await store.list_unpublished(100)
         assert len(msgs) == 1
         assert msgs[0].subject == "user.created"
-        assert msgs[0].payload == {"foo": "bar", "n": 7}
+        assert json.loads(msgs[0].payload) == {"foo": "bar", "n": 7}
+        assert msgs[0].attempts == 0
 
-        await store.mark_published(msgs[0].id)
+        await store.mark_published([msgs[0].id])
         assert await store.list_unpublished(100) == []
+    finally:
+        await pool.close()  # type: ignore[attr-defined]
+
+
+async def test_require_tx_rejects_outside_tx(pg_dsn: str) -> None:
+    migrate_up(MigrateConfig(dsn=pg_dsn, path=migrations_path()))
+    pool = await new_pool(PoolConfig(dsn=pg_dsn, min_conns=1, max_conns=3))
+    store = PgStore(DB(pool), require_tx=True)
+    tr = PoolTransactor(pool)
+    try:
+        await pool.execute("TRUNCATE outbox")  # type: ignore[attr-defined]
+        with pytest.raises(RuntimeError, match="require_tx"):
+            await store.insert("evt", {"n": 1})
+
+        async def ok() -> None:
+            await store.insert("evt", {"n": 2})
+
+        await tr.with_tx(ok)
+        assert len(await store.list_unpublished(10)) == 1
+    finally:
+        await pool.close()  # type: ignore[attr-defined]
+
+
+async def test_poison_and_backlog(pg_dsn: str) -> None:
+    store, _, pool = await _store(pg_dsn)
+    try:
+        await pool.execute("TRUNCATE outbox")  # type: ignore[attr-defined]
+        await store.insert("evt", {"n": 1})
+        await store.insert("evt", {"n": 2})
+
+        msgs = await store.list_unpublished(10)
+        assert len(msgs) == 2
+
+        # одно — dead, другое — транзиентный фейл.
+        await store.record_failures(
+            [
+                Failure(id=msgs[0].id, err="boom", dead=True),
+                Failure(id=msgs[1].id, err="transient", dead=False),
+            ]
+        )
+
+        left = await store.list_unpublished(10)
+        assert len(left) == 1
+        assert left[0].id == msgs[1].id
+        assert left[0].attempts == 1  # dead исключён из выборки
+
+        backlog = await store.backlog()
+        assert len(backlog) == 1
+        assert backlog[0].subject == "evt"
+        assert backlog[0].pending == 1
+        assert backlog[0].oldest > 0
     finally:
         await pool.close()  # type: ignore[attr-defined]
 
@@ -56,7 +111,6 @@ async def test_rollback_drops_message(pg_dsn: str) -> None:
         with pytest.raises(RuntimeError, match="business failure"):
             await tr.with_tx(fail)
 
-        # Insert откатился вместе с tx — outbox пуст.
         assert await store.list_unpublished(100) == []
 
         async def ok() -> None:
@@ -64,6 +118,26 @@ async def test_rollback_drops_message(pg_dsn: str) -> None:
 
         await tr.with_tx(ok)
         assert len(await store.list_unpublished(100)) == 1
+    finally:
+        await pool.close()  # type: ignore[attr-defined]
+
+
+async def test_custom_table(pg_dsn: str) -> None:
+    migrate_up(MigrateConfig(dsn=pg_dsn, path=migrations_path()))
+    pool = await new_pool(PoolConfig(dsn=pg_dsn, min_conns=1, max_conns=3))
+    db = DB(pool)
+    try:
+        await pool.execute(schema_sql("outbox_orders"))  # type: ignore[attr-defined]
+        store = new_store_for(db, "outbox_orders")
+        await store.ensure_partitions(1)
+
+        await store.insert("order.created", {"foo": "x"})
+        msgs = await store.list_unpublished(10)
+        assert len(msgs) == 1
+        assert msgs[0].subject == "order.created"
+
+        await store.mark_published([msgs[0].id])
+        assert await store.list_unpublished(10) == []
     finally:
         await pool.close()  # type: ignore[attr-defined]
 

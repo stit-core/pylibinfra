@@ -62,6 +62,23 @@ class NatsInstruments:
             propagate.inject(headers)
             yield span, headers
 
+    def start_publish_span(self, subject: str, data: bytes) -> tuple[Span, dict[str, str]]:
+        """Detached producer-span (не current) + carrier-headers — для JetStream:
+        одиночная и батч-публикация идут конкурентно, поэтому span нельзя делать
+        current (как start_as_current_span). Вызывающий обязан вызвать span.end()."""
+        span = self.tracer.start_span(
+            f"natskit.publish {subject}",
+            kind=SpanKind.PRODUCER,
+            attributes={
+                _MESSAGING_SYSTEM: "nats",
+                _MESSAGING_DESTINATION: subject,
+                _MESSAGING_BODY_SIZE: len(data),
+            },
+        )
+        headers: dict[str, str] = {}
+        propagate.inject(headers, context=trace.set_span_in_context(span))
+        return span, headers
+
     def consumer_span(self, subject: str, data: bytes, headers: dict[str, str] | None) -> Span:
         """Consumer-span как child producer'а (trace-context из headers)."""
         ctx = propagate.extract(headers) if headers else None

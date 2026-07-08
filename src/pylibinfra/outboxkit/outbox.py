@@ -1,8 +1,7 @@
-"""Core-абстракции transactional-outbox: Message + порты Store/LagReporter.
+"""Core-абстракции transactional-outbox: Message, Failure + порт Repository.
 
-Store отделён от pgstore-реализации, чтобы доменный код зависел от порта, а не
-от Postgres. LagReporter — отдельный (опциональный) порт: store, умеющий считать
-отставание, подключается к outbox_lag_seconds через register_lag_gauge.
+Repository отделён от pgstore-реализации, чтобы доменный код зависел от порта, а
+не от Postgres. `Store` сохранён как алиас Repository для обратной совместимости.
 """
 
 from dataclasses import dataclass
@@ -14,18 +13,27 @@ class Message:
     id: int
     subject: str
     payload: Any
+    # attempts — сколько раз публикация уже проваливалась (для poison-логики).
+    attempts: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class Failure:
+    """Результат неудачной публикации события: dead=True помечает строку мёртвой
+    (исчерпан max_attempts) — она больше не вычитывается на ретрай."""
+
+    id: int
+    err: str
+    dead: bool
 
 
 @runtime_checkable
-class Store(Protocol):
+class Repository(Protocol):
     async def insert(self, subject: str, payload: Any) -> None: ...
     async def list_unpublished(self, limit: int) -> list[Message]: ...
-    async def mark_published(self, id: int) -> None: ...
-    async def lag_by_subject(self) -> dict[str, float]: ...
+    async def mark_published(self, ids: list[int]) -> None: ...
+    async def record_failures(self, failures: list[Failure]) -> None: ...
 
 
-# Узкий порт для outbox_lag_seconds: реализуют store'ы, умеющие считать возраст
-# самого старого неопубликованного события по каждому subject'у (значения — сек).
-@runtime_checkable
-class LagReporter(Protocol):
-    async def lag_by_subject(self) -> dict[str, float]: ...
+# Обратная совместимость: старое имя порта.
+Store = Repository

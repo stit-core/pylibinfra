@@ -16,7 +16,7 @@ from .module import PgProvider, new_pool_config, new_replica_config
 from .pool import PoolConfig, new_pool
 from .probe import DBProbe, db_probe
 from .replica import ReadWriteDB, ReplicaConfig
-from .transactor import Executor, PoolTransactor, Transactor, conn
+from .transactor import Executor, PoolTransactor, Transactor, conn, in_tx
 from .types import Connection, Pool, Record
 
 __all__ = [
@@ -35,6 +35,7 @@ __all__ = [
     "Transactor",
     "conn",
     "db_probe",
+    "in_tx",
     "instrument_pool",
     "is_check_violation",
     "is_foreign_key_violation",

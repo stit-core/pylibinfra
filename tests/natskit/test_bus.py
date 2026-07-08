@@ -30,6 +30,7 @@ class FakeClient:
     def __init__(self) -> None:
         self.is_connected = True
         self.published: list[tuple[str, bytes, dict[str, str]]] = []
+        self.queues: dict[str, str] = {}
         self._subs: dict[str, Callable[[Any], Awaitable[None]]] = {}
 
     async def publish(
@@ -37,8 +38,12 @@ class FakeClient:
     ) -> None:
         self.published.append((subject, payload, headers or {}))
 
-    async def subscribe(self, subject: str, cb: Callable[[Any], Awaitable[None]]) -> None:
+    async def subscribe(
+        self, subject: str, cb: Callable[[Any], Awaitable[None]], queue: str = ""
+    ) -> None:
         self._subs[subject] = cb
+        if queue:
+            self.queues[subject] = queue
 
     async def deliver(
         self, subject: str, data: bytes, headers: dict[str, str] | None = None
@@ -152,3 +157,43 @@ async def test_publish_injects_trace_headers() -> None:
 
     _, _, headers = fc.published[0]
     assert "traceparent" in headers
+
+
+async def test_subscribe_queue_passes_queue_group() -> None:
+    conn, fc = fake_conn()
+    bus = NatsBus(conn)
+
+    got: asyncio.Future[bytes] = asyncio.get_event_loop().create_future()
+
+    async def handler(payload: bytes) -> None:
+        got.set_result(payload)
+
+    await bus.subscribe_queue("test.q", "workers", handler)
+    assert fc.queues.get("test.q") == "workers"
+
+    await fc.deliver("test.q", b"x")
+    await drain_handlers(bus)
+    assert got.result() == b"x"
+
+
+async def test_subject_and_headers_in_context() -> None:
+    from pylibinfra.natskit import headers_from_context, subject_from_context
+
+    conn, fc = fake_conn()
+    bus = NatsBus(conn)
+
+    seen: asyncio.Future[tuple[str, dict[str, str]]] = asyncio.get_event_loop().create_future()
+
+    async def handler(_: bytes) -> None:
+        seen.set_result((subject_from_context(), headers_from_context()))
+
+    await bus.subscribe("a.b.cmd", handler)
+    await fc.deliver("a.b.cmd", b"{}", {"event-type": "created"})
+    await drain_handlers(bus)
+
+    subject, headers = seen.result()
+    assert subject == "a.b.cmd"
+    assert headers.get("event-type") == "created"
+    # Вне обработчика контекст пуст.
+    assert subject_from_context() == ""
+    assert headers_from_context() == {}

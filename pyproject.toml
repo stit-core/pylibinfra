@@ -148,6 +148,10 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "N802", "PLR2004"]  # assert/hardcoded-secret/имена/magic в тестах — ок
+# имя таблицы/партиции инлайнится в SQL (объект нельзя передать плейсхолдером),
+# валидируется regex'ом на входе — как в golibinfra; S608 здесь ложноположителен
+"src/pylibinfra/outboxkit/pgstore/store.py" = ["S608"]
+"src/pylibinfra/outboxkit/pgstore/partitions.py" = ["S608"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["pylibinfra"]

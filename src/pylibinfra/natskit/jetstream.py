@@ -5,20 +5,33 @@ import json
 import time
 import traceback
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Protocol
 
+from nats.aio.client import Client
 from nats.aio.msg import Msg
 from nats.js import api
 from nats.js.client import JetStreamContext
-from opentelemetry.trace import Status, StatusCode
+from nats.js.errors import APIError
+from opentelemetry.trace import Span, Status, StatusCode
 
 from pylibinfra.logkit import Logger, nop
 
 from .config import Config
 from .conn import Conn
+from .context import bind_context, unbind_context
 from .instrumentation import NatsInstruments
 
 Handler = Callable[[bytes], Awaitable[None]]
+
+# Код ошибки JetStream «stream name already in use» — сигнал перейти на update_stream.
+_STREAM_EXISTS = 10058
+
+# Внутренняя деталь push-консьюмера nats-py: flow-control требует idle_heartbeat.
+# В Go pull-консьюмере этих полей нет, поэтому публичный env-контракт их не заводит
+# (равняем на golibinfra) — держим фиксированными.
+_FLOW_CONTROL = True
+_IDLE_HEARTBEAT = 5.0
 
 
 class JetStreamDisabledError(RuntimeError):
@@ -26,8 +39,22 @@ class JetStreamDisabledError(RuntimeError):
         super().__init__("natskit: jetstream is disabled")
 
 
+@dataclass(frozen=True, slots=True)
+class StreamMsg:
+    """Единица батч-публикации в JetStream. msg_id (опц.) ставит Nats-Msg-Id: в
+    пределах окна StreamConfig.duplicate_window сообщения с тем же id
+    дедуплицируются стримом (effectively-once персист при ретраях продьюсера)."""
+
+    subject: str
+    payload: bytes
+    msg_id: str = ""
+
+
 class StreamBus(Protocol):
-    async def publish_stream(self, subject: str, payload: bytes) -> None: ...
+    async def publish_stream(
+        self, subject: str, payload: bytes, msg_id: str | None = None
+    ) -> None: ...
+    async def publish_stream_batch(self, msgs: list[StreamMsg]) -> list[Exception | None]: ...
     async def subscribe_stream(
         self, stream: str, subject: str, durable: str, handler: Handler
     ) -> None: ...
@@ -35,7 +62,10 @@ class StreamBus(Protocol):
 
 
 class DisabledStreamBus:
-    async def publish_stream(self, subject: str, payload: bytes) -> None:
+    async def publish_stream(self, subject: str, payload: bytes, msg_id: str | None = None) -> None:
+        raise JetStreamDisabledError()
+
+    async def publish_stream_batch(self, msgs: list[StreamMsg]) -> list[Exception | None]:
         raise JetStreamDisabledError()
 
     async def subscribe_stream(
@@ -48,26 +78,24 @@ class DisabledStreamBus:
 
 
 class JsBus:
-    def __init__(self, js: JetStreamContext, cfg: Config, log: Logger | None = None) -> None:
+    def __init__(
+        self, js: JetStreamContext, nc: Client, cfg: Config, log: Logger | None = None
+    ) -> None:
         max_in_flight = cfg.jetstream.max_in_flight
         if max_in_flight <= 0:
             max_in_flight = 100
         ack_wait = cfg.jetstream.ack_wait
         if ack_wait <= 0:
             ack_wait = 30.0
-        max_deliver = cfg.jetstream.max_deliver
-        if max_deliver <= 0:
-            max_deliver = 5
         self._js = js
+        self._nc = nc
         self._log = log or nop()
         self._sem = asyncio.Semaphore(max_in_flight)
         self._ack_wait = ack_wait
         self._max_in_flight = max_in_flight
-        self._max_deliver = max_deliver
-        self._backoff = list(cfg.jetstream.backoff)
-        self._flow_control = cfg.jetstream.flow_control
-        self._idle_heartbeat = cfg.jetstream.idle_heartbeat
-        self._dlq_enabled = cfg.jetstream.dlq_enabled
+        self._max_deliver = cfg.jetstream.max_deliver
+        self._nak_backoff = cfg.jetstream.nak_backoff
+        self._dlq_subject = cfg.jetstream.dlq_subject
         self._instr = NatsInstruments()
         self._tasks: set[asyncio.Task[None]] = set()
         self._subs: list[JetStreamContext.PushSubscription] = []
@@ -78,6 +106,9 @@ class JsBus:
             return
         retention = _parse_retention(cfg.jetstream.retention)
         max_age = cfg.jetstream.max_age if cfg.jetstream.max_age > 0 else 7 * 24 * 3600
+        dup = cfg.jetstream.duplicates if cfg.jetstream.duplicates > 0 else 120.0
+        # JetStream требует duplicate_window ≤ max_age.
+        dup = min(dup, max_age)
         for name in names:
             scfg = api.StreamConfig(
                 name=name,
@@ -85,28 +116,72 @@ class JsBus:
                 retention=retention,
                 max_age=max_age,
                 storage=api.StorageType.FILE,
+                duplicate_window=dup,
             )
             try:
                 await self._js.add_stream(config=scfg)
-            except Exception as exc:
+            except APIError as exc:
+                # Стрим уже есть — идемпотентно обновляем (create-or-update).
+                if exc.err_code == _STREAM_EXISTS:
+                    await self._js.update_stream(config=scfg)
+                    continue
                 raise RuntimeError(f"natskit: ensure stream {name}: {exc}") from exc
 
-    async def publish_stream(self, subject: str, payload: bytes) -> None:
-        status = "ok"
+    async def publish_stream(self, subject: str, payload: bytes, msg_id: str | None = None) -> None:
+        span, headers = self._instr.start_publish_span(subject, payload)
+        if msg_id:
+            headers[api.Header.MSG_ID] = msg_id
         start = time.perf_counter()
-        with self._instr.publish_span(subject, payload) as (span, headers):
+        err: Exception | None = None
+        try:
+            await self._js.publish(subject, payload, headers=headers)
+        except Exception as exc:
+            err = exc
+        self._record_publish(subject, time.perf_counter() - start, err, span)
+        if err is not None:
+            raise RuntimeError(f"natskit: jetstream publish: {err}") from err
+
+    async def publish_stream_batch(self, msgs: list[StreamMsg]) -> list[Exception | None]:
+        # Async-батч: все улетают разом через publish_async, затем ждём PubAck по
+        # каждому. results[i] == None — подтверждён персистом; дедуп по msg_id —
+        # без дублей. Порядок персиста best-effort (частичный сбой → ретрай).
+        if not msgs:
+            return []
+        results: list[Exception | None] = [None] * len(msgs)
+        pending: list[tuple[int, asyncio.Future[api.PubAck], Span, float]] = []
+        for i, m in enumerate(msgs):
+            span, headers = self._instr.start_publish_span(m.subject, m.payload)
+            if m.msg_id:
+                headers[api.Header.MSG_ID] = m.msg_id
+            start = time.perf_counter()
             try:
-                await self._js.publish(subject, payload, headers=headers)
+                fut = await self._js.publish_async(m.subject, m.payload, headers=headers)
             except Exception as exc:
-                status = "error"
-                span.record_exception(exc)
-                span.set_status(Status(StatusCode.ERROR, str(exc)))
-                raise RuntimeError(f"natskit: jetstream publish: {exc}") from exc
-            finally:
-                dur = time.perf_counter() - start
-                attrs = {"subject": subject, "transport": "jetstream"}
-                self._instr.published_total.add(1, {**attrs, "status": status})
-                self._instr.publish_duration.record(dur, attrs)
+                results[i] = exc
+                self._record_publish(m.subject, time.perf_counter() - start, exc, span)
+                continue
+            pending.append((i, fut, span, start))
+
+        for i, fut, span, start in pending:
+            err: Exception | None = None
+            try:
+                await fut
+            except Exception as exc:
+                err = exc
+            results[i] = err
+            self._record_publish(msgs[i].subject, time.perf_counter() - start, err, span)
+        return results
+
+    def _record_publish(self, subject: str, dur: float, err: Exception | None, span: Span) -> None:
+        status = "ok"
+        if err is not None:
+            status = "error"
+            span.record_exception(err)
+            span.set_status(Status(StatusCode.ERROR, str(err)))
+        span.end()
+        attrs = {"subject": subject, "transport": "jetstream"}
+        self._instr.published_total.add(1, {**attrs, "status": status})
+        self._instr.publish_duration.record(dur, attrs)
 
     async def subscribe_stream(
         self, stream: str, subject: str, durable: str, handler: Handler
@@ -117,10 +192,10 @@ class JsBus:
             filter_subject=subject,
             ack_wait=self._ack_wait,
             max_ack_pending=self._max_in_flight,
-            max_deliver=self._max_deliver,
-            backoff=self._backoff,
-            flow_control=self._flow_control,
-            idle_heartbeat=self._idle_heartbeat,
+            # 0/None — серверный unlimited (backstop); client-side term ниже.
+            max_deliver=self._max_deliver if self._max_deliver > 0 else None,
+            flow_control=_FLOW_CONTROL,
+            idle_heartbeat=_IDLE_HEARTBEAT,
         )
 
         async def cb(msg: Msg) -> None:
@@ -144,62 +219,93 @@ class JsBus:
         span = self._instr.consumer_span(subject, msg.data, dict(msg.headers or {}))
         start = time.perf_counter()
         status = "ok"
+        tokens = bind_context(subject, msg.headers)
         try:
-            try:
-                await handler(msg.data)
-            except Exception as exc:
-                span.record_exception(exc)
-                span.set_status(Status(StatusCode.ERROR, str(exc)))
-                num_delivered = msg.metadata.num_delivered
-                if num_delivered >= self._max_deliver:
-                    status = "dead_letter"
-                    self._log.error(
-                        "natskit: jetstream dead-letter (max_deliver exhausted)",
-                        subject=subject,
-                        num_delivered=num_delivered,
-                        max_deliver=self._max_deliver,
-                        err=str(exc),
-                        stack=traceback.format_exc(),
-                    )
-                    # term() останавливает редоставку — иначе nak уйдёт в hot-loop до max_age стрима
-                    await msg.term()
-                    await self._to_dlq(subject, msg)
-                    return
-                status = "handler_error"
-                self._log.error(
-                    "natskit: jetstream handler error",
-                    subject=subject,
-                    num_delivered=num_delivered,
-                    err=str(exc),
-                    stack=traceback.format_exc(),
-                )
-                # backoff из ConsumerConfig применяет сервер по num_delivered — явный delay не нужен
-                await msg.nak()
-                return
-            await msg.ack()
+            handler_err, panicked = await self._invoke(subject, handler, msg.data)
+            if handler_err is not None:
+                span.record_exception(handler_err)
+                span.set_status(Status(StatusCode.ERROR, str(handler_err)))
+                status = await self._fail_stream(msg, subject, handler_err, panicked)
+            else:
+                try:
+                    await msg.ack()
+                except Exception as exc:
+                    self._log.error("natskit: jetstream ack error", subject=subject, err=str(exc))
         finally:
+            unbind_context(tokens)
             dur = time.perf_counter() - start
             span.end()
             self._instr.consumed_total.add(1, {**attrs, "status": status})
             self._instr.handle_duration.record(dur, attrs)
             self._instr.inflight.add(-1, attrs)
 
-    async def _to_dlq(self, subject: str, msg: Msg) -> None:
-        if not self._dlq_enabled:
-            return
-        # core-nats publish (не JS): сабжект `dlq.{subject}` намеренно вне filter `{name}.>`
-        # стримов (ensure_streams) — его НЕЛЬЗЯ добавлять в subjects стрима, иначе term'нутое
-        # сообщение вернётся в тот же консьюмер и петля редоставки восстановится
-        dlq_subject = f"dlq.{subject}"
+    async def _invoke(
+        self, subject: str, handler: Handler, data: bytes
+    ) -> tuple[BaseException | None, bool]:
+        # Возврат (err, panicked): panicked=True — не-graceful аварийный выход
+        # хендлера (аналог Go recover). CancelledError и фатальные сигналы — наружу.
         try:
-            await self._js._nc.publish(dlq_subject, msg.data, headers=msg.headers)
+            await handler(data)
+            return None, False
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
+            return exc, False
+        except BaseException as exc:
+            if isinstance(exc, KeyboardInterrupt | SystemExit):
+                raise
             self._log.error(
-                "natskit: jetstream dlq publish failed",
+                "natskit: jetstream handler panic",
                 subject=subject,
-                dlq_subject=dlq_subject,
-                err=str(exc),
+                panic=str(exc),
+                stack=traceback.format_exc(),
             )
+            return exc, True
+
+    async def _fail_stream(
+        self, msg: Msg, subject: str, cause: BaseException, panicked: bool
+    ) -> str:
+        # На исчерпании max_deliver — DLQ (если задан) + term (стоп ределивери);
+        # иначе NAK с опциональным backoff.
+        if self._terminal(msg):
+            await self._dead_letter(msg, cause)
+            try:
+                await msg.term()
+            except Exception as exc:
+                self._log.error("natskit: jetstream term error", subject=subject, err=str(exc))
+            return "dead"
+
+        if self._nak_backoff > 0:
+            await msg.nak(delay=self._nak_backoff)
+        else:
+            await msg.nak()
+        if not panicked:
+            # panic уже залогирован в _invoke.
+            self._log.error(
+                "natskit: jetstream handler error",
+                subject=subject,
+                num_delivered=_num_delivered(msg),
+                err=str(cause),
+            )
+        return "panic" if panicked else "handler_error"
+
+    def _terminal(self, msg: Msg) -> bool:
+        if self._max_deliver <= 0:
+            return False
+        return _num_delivered(msg) >= self._max_deliver
+
+    async def _dead_letter(self, msg: Msg, cause: BaseException) -> None:
+        if not self._dlq_subject:
+            return
+        # core-nats publish (не JS): dlq_subject намеренно ВНЕ filter `{name}.>` стрима —
+        # иначе term'нутое сообщение вернулось бы в тот же консьюмер и петля восстановилась.
+        headers = dict(msg.headers or {})
+        headers["Natskit-Dlq-Origin"] = msg.subject
+        headers["Natskit-Dlq-Error"] = str(cause)
+        try:
+            await self._nc.publish(self._dlq_subject, msg.data, headers=headers)
+        except Exception as exc:
+            self._log.error("natskit: dlq publish", subject=self._dlq_subject, err=str(exc))
 
     async def drain(self) -> None:
         # порядок: unsubscribe (стоп новых доставок) → дождаться in-flight тасок (ack/nak до
@@ -219,6 +325,13 @@ class JsBus:
         self._log.info("natskit: jetstream drained", inflight=0)
 
 
+def _num_delivered(msg: Msg) -> int:
+    try:
+        return int(msg.metadata.num_delivered)
+    except Exception:
+        return 0
+
+
 def _parse_retention(s: str) -> api.RetentionPolicy:
     key = s.strip().lower()
     if key in ("", "limits"):
@@ -234,14 +347,16 @@ async def new_stream_bus(conn: Conn, cfg: Config, log: Logger | None = None) -> 
     if not cfg.jetstream.enabled:
         return DisabledStreamBus()
     js = conn.raw.jetstream()
-    bus = JsBus(js, cfg, log)
+    bus = JsBus(js, conn.raw, cfg, log)
     await bus.ensure_streams(cfg)
     return bus
 
 
-async def publish_stream_json[T](bus: StreamBus, subject: str, msg: T) -> None:
+async def publish_stream_json[T](
+    bus: StreamBus, subject: str, msg: T, msg_id: str | None = None
+) -> None:
     data = json.dumps(msg, separators=(",", ":")).encode()
-    await bus.publish_stream(subject, data)
+    await bus.publish_stream(subject, data, msg_id)
 
 
 async def subscribe_stream_json[T](

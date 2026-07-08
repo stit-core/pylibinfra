@@ -7,11 +7,20 @@ from typing import Any
 from dishka import Provider, Scope, make_async_container, provide
 
 from pylibinfra.logkit import Logger, nop
-from pylibinfra.natskit import Bus as NatsBus
-from pylibinfra.outboxkit import Bus, Config, Message, OutboxProvider, Publisher, Store, Worker
+from pylibinfra.natskit import StreamBus, StreamMsg
+from pylibinfra.outboxkit import (
+    Bus,
+    Config,
+    Failure,
+    Message,
+    OutboxProvider,
+    Publisher,
+    Repository,
+    Worker,
+)
 
 
-class FakeStore:
+class FakeRepo:
     def __init__(self) -> None:
         self._seq = itertools.count(1)
         self.rows: dict[int, Message] = {}
@@ -24,35 +33,44 @@ class FakeStore:
     async def list_unpublished(self, limit: int) -> list[Message]:
         return [m for mid, m in self.rows.items() if mid not in self.published][:limit]
 
-    async def mark_published(self, id: int) -> None:
-        self.published.add(id)
+    async def mark_published(self, ids: list[int]) -> None:
+        self.published.update(ids)
 
-    async def lag_by_subject(self) -> dict[str, float]:
-        return {"evt": 1.0}
+    async def record_failures(self, failures: list[Failure]) -> None:  # pragma: no cover
+        pass
 
 
-class FakeNatsBus:
+class FakeStreamBus:
     def __init__(self) -> None:
-        self.sent: list[tuple[str, Any]] = []
+        self.sent: list[StreamMsg] = []
 
-    async def publish(self, subject: str, payload: Any) -> None:
-        self.sent.append((subject, payload))
+    async def publish_stream(
+        self, subject: str, payload: bytes, msg_id: str | None = None
+    ) -> None:  # pragma: no cover
+        self.sent.append(StreamMsg(subject=subject, payload=payload, msg_id=msg_id or ""))
 
-    async def subscribe(self, subject: str, handler: Any) -> None:  # pragma: no cover
+    async def publish_stream_batch(self, msgs: list[StreamMsg]) -> list[Exception | None]:
+        self.sent.extend(msgs)
+        return [None] * len(msgs)
+
+    async def subscribe_stream(self, stream: str, subject: str, durable: str, handler: Any) -> None:
         raise NotImplementedError
 
+    async def drain(self) -> None:  # pragma: no cover
+        return
 
-def _deps(store: FakeStore, bus: FakeNatsBus) -> Provider:
+
+def _deps(repo: FakeRepo, sb: FakeStreamBus) -> Provider:
     class _Deps(Provider):
         scope = Scope.APP
 
         @provide
-        def store(self) -> Store:
-            return store
+        def repo(self) -> Repository:
+            return repo
 
         @provide
-        def nats(self) -> NatsBus:
-            return bus
+        def stream_bus(self) -> StreamBus:
+            return sb
 
         @provide
         def cfg(self) -> Config:
@@ -66,34 +84,34 @@ def _deps(store: FakeStore, bus: FakeNatsBus) -> Provider:
 
 
 async def test_provider_runs_and_stops_worker() -> None:
-    store = FakeStore()
-    nats = FakeNatsBus()
-    await store.insert("evt", {"i": 1})
+    repo = FakeRepo()
+    sb = FakeStreamBus()
+    await repo.insert("evt", {"i": 1})
 
-    container = make_async_container(OutboxProvider(), _deps(store, nats))
+    container = make_async_container(OutboxProvider(), _deps(repo, sb))
 
     worker = await container.get(Worker)
     assert worker is not None
     await asyncio.sleep(0.05)
-    assert store.published == {1}
+    assert repo.published == {1}
 
     # close() триггерит async-generator-выход → задача воркера отменяется.
     await container.close()
-    snapshot = len(nats.sent)
+    snapshot = len(sb.sent)
     await asyncio.sleep(0.03)
-    assert len(nats.sent) == snapshot
+    assert len(sb.sent) == snapshot
 
 
 async def test_provider_wires_bus_and_publisher() -> None:
-    store = FakeStore()
-    nats = FakeNatsBus()
-    container = make_async_container(OutboxProvider(), _deps(store, nats))
+    repo = FakeRepo()
+    sb = FakeStreamBus()
+    container = make_async_container(OutboxProvider(), _deps(repo, sb))
 
     bus = await container.get(Bus)
     publisher = await container.get(Publisher)
     assert publisher is bus
 
     await bus.publish("user.created", {"id": 1})
-    assert len(store.rows) == 1
+    assert len(repo.rows) == 1
 
     await container.close()
