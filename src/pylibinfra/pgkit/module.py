@@ -18,8 +18,8 @@ ReplicaPool = NewType("ReplicaPool", object)
 
 # Provider не provide'ит свои Config'и (asymmetry note) — caller регистрирует их
 # сам. Дешёвый mode: new_pool_config()/new_replica_config() ниже. Meter берётся
-# из глобального OTel-provider'а (его выставляет telemetry.init) — без telemetry
-# в DI инструментация — no-op.
+# из глобального OTel-provider'а — без выставленного MeterProvider'а
+# инструментация no-op.
 class PgProvider(Provider):
     scope = Scope.APP
 

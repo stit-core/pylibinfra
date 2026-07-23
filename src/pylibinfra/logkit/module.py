@@ -9,9 +9,7 @@ from .structlog_impl import configure, new_logger
 
 # Provider не provide'ит Config / ServiceConfig / RedactConfig — caller
 # регистрирует их сам (asymmetry note, см. pgkit/module.py). Дешёвый mode —
-# new_*-фабрики ниже. Meter и LoggerProvider logkit берёт из глобальных OTel-
-# providers (их выставляет telemetry.init) — так logkit работает и без telemetry
-# в DI (тогда вывод идёт только в stdout, OTel-handler no-op).
+# new_*-фабрики ниже.
 class LogkitProvider(Provider):
     scope = Scope.APP
 

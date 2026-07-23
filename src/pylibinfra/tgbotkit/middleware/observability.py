@@ -13,8 +13,9 @@ from typing import Any
 
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
-from pylibinfra.telemetry import span
 from pylibinfra.tgbotkit.metrics import TgInstruments
 
 Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
@@ -28,9 +29,16 @@ class ObservabilityMiddleware(BaseMiddleware):
         update_type = str(getattr(event, "event_type", "unknown"))
         start = time.perf_counter()
         result = "ok"
+        tracer = trace.get_tracer("app")
         try:
-            with span("tg.update", **{"tg.update_type": update_type}):
-                return await handler(event, data)
+            with tracer.start_as_current_span("tg.update") as s:
+                s.set_attribute("tg.update_type", update_type)
+                try:
+                    return await handler(event, data)
+                except Exception as exc:
+                    s.record_exception(exc)
+                    s.set_status(Status(StatusCode.ERROR, str(exc)))
+                    raise
         except Exception:
             result = "error"
             raise

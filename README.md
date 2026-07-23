@@ -2,26 +2,24 @@
 
 # pylibinfra
 
-### Инфраструктурные Python-kit'ы с observability из коробки
+### Инфраструктурные Python-kit'ы для сервисов stit
 
-Набор переиспользуемых Python-библиотек для сервисов экосистемы stit: телеметрия,
+Набор переиспользуемых Python-библиотек для сервисов экосистемы stit:
 auth, БД, messaging, кэш, аудит, storage. Каждый kit — `dishka.Provider`,
-инструментирован OTel, подключается независимо. Импортируется как Python-пакет из
+подключается независимо. Импортируется как Python-пакет из
 бизнес-репозиториев. Идейный и структурный аналог
 [`golibinfra`](https://git.stit.tech/stit-core/golibinfra) для Python-стека.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563eb)](LICENSE)
 [![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/stit-public)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB)](#использование-в-проекте)
-[![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#minimum-viable-observability)
-[![Kits](https://img.shields.io/badge/kits-18-0ea5e9)](#пакеты)
+[![Kits](https://img.shields.io/badge/kits-19-0ea5e9)](#пакеты)
 
 </div>
 
 ```python
 from pylibinfra.pgkit import PgProvider
 from pylibinfra.httpkit import HttpProvider
-from pylibinfra.telemetry import TelemetryProvider
 from pylibinfra import config
 from pylibinfra import testkit
 ```
@@ -30,10 +28,7 @@ from pylibinfra import testkit
 
 `pylibinfra` — общая Python-lib экосистемы stit, симметричная `golibinfra` для
 Go-сервисов. Карта всех репо — на
-[витрине stit](https://git.stit.tech/stit-core/stit-public). Каноническая
-карта контрактов (tenant = `<p>-<env>`, AppRole `projects-<p>-<env>`, OTLP-flow) —
-`corp-infra-template/docs/ecosystem.md`. Телеметрия из коробки попадает на те же
-стандартные дашборды корп-Grafana (папка **Apps**), что и у Go-сервисов.
+[витрине stit](https://git.stit.tech/stit-core/stit-public).
 
 ## Доступ к репозиторию
 
@@ -69,7 +64,6 @@ dependencies = [
   имена сервисов — он не здесь.
 - **Без скрытых зависимостей.** Каждый пакет подключается независимо.
 - **dishka-first.** Каждый пакет экспортирует `Provider` для проводки в DI-контейнер.
-- **Observability-by-default.** Все компоненты инструментированы OTel.
 - **async-first.** Весь I/O — на asyncio (asyncpg / nats-py / redis.asyncio / httpx / FastAPI).
 
 ## Пакеты
@@ -90,27 +84,24 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | `cachekit` | Redis-обёртка: `Cache`, `get_json`/`set_json`, `invalidate_by_tag`; `IdempotencyStore` для `httpkit` |
 | `flagkit` | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.bool/str` |
 | `timerkit` | Periodic jobs через asyncio: регистрация задач с интервалом, lifecycle-aware |
-| `telemetry` | OTel init (trace/meter/log), OTLP exporters, `span(name)` контекст-менеджер |
-| `logkit` | `Logger` поверх structlog; fan-out OTLP→Loki + JSON-stdout (`LOG_STDOUT`); trace_id correlation; redact (PII-фильтры) |
+| `logkit` | `Logger` поверх structlog; JSON → stdout/file (`LOG_STDOUT`); redact (PII-фильтры) |
 | `authnkit` | `Hasher` (Argon2id); `JWTConfig` + sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`has` для RBAC |
 | `bizmetric` | Helper для бизнес-метрик: `counter/histogram/gauge`, форсит конвенцию `biz_<domain>_<event>_*` (raise при нарушении) |
 | `outboxkit` | Transactional outbox: `Worker` публикует в JetStream через `Transport` (`OUTBOX_PUBLISH_MODE` batch\|ordered), `Bus`, multi-instance `Outbox`, core+pgstore split; poison→dead (`OUTBOX_MAX_ATTEMPTS`), retention (`OUTBOX_RETENTION_MONTHS`), `BacklogReporter` для `outbox_lag_seconds`/`outbox_pending_count` |
 | `auditkit` | Audit-log: `Entry`/`Recorder`, core+pgstore split |
 | `bruteforcekit` | Brute-force guard: per-subject + per-IP счётчики, `LockState`, core+pgstore split |
 | `clockkit` | `Clock` + test-fakes (`Fixed`, `Tickable`) для детерминированных временных тестов |
-| `config` | Загрузчик: env (pydantic-settings) + Vault (hvac), композиция `Source` для приложения |
+| `config` | Загрузчик: env (pydantic-settings), композиция `Source` для приложения |
 | `testkit` | testcontainers: `start_postgres`, `start_nats`, `start_redis`; httptest helpers; per-kit subpackages |
 
 ## Per-concern endpoints (multi-host)
 
 Каждый кит читает свой эндпоинт из ENV — **разное значение = разный хост**. Это
-«шов» для split-топологии: telemetry / storage / Postgres / NATS / Redis можно
+«шов» для split-топологии: storage / Postgres / NATS / Redis можно
 развести по отдельным серверам, **не трогая код**.
 
 | Env | Кит | Назначение |
 |---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `telemetry` | OTLP-ingest коллектора (host:port; без коллектора экспорт молча дропается — метрики/трейсы в stdout не пишутся) |
-| `VAULT_ADDR` | `config` | Vault как secret-source |
 | `PG_DSN` | `pgkit` | Postgres (primary) |
 | `PG_REPLICA_DSN` | `pgkit` | Postgres read-replica (опц.; `ReadWriteDB`) |
 | `STORAGE_S3_ENDPOINT` | `storagekit` | S3 / MinIO object storage |
@@ -120,43 +111,16 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 `outboxkit` **не** имеет своего эндпоинта — он co-located с pg-хостом: outbox
 пишется в той же транзакции, что и доменные данные (атомарность).
 
-## Minimum viable observability
+## Наблюдаемость (opt-in)
 
-Подключение dishka-провайдеров pylibinfra даёт **автоматический** RED + DB-pool +
-bus + logs + traces. Минимальный набор для сервиса, который сразу попадает на
-стандартные дашборды корп-Grafana (папка **Apps**):
+Киты инструментированы **OpenTelemetry-API** (спаны + метрики) через глобальный
+провайдер otel-python. Без сконфигурированного OTel-provider'а инструментация —
+**no-op**: экспортёр и бэкенд подключает консьюмер сам. `logkit` пишет
+structlog-JSON в stdout/file независимо от OTel.
 
-```python
-from dishka import make_async_container
-from pylibinfra.telemetry import TelemetryProvider
-from pylibinfra.logkit import LogkitProvider
-from pylibinfra.httpkit import HttpProvider
-from pylibinfra.pgkit import PgProvider
-from pylibinfra.natskit import NatsProvider
-
-container = make_async_container(
-    TelemetryProvider(),   # OTLP exporter + runtime (system_*, runtime metrics)
-    LogkitProvider(),      # log_messages_total{level}, structlog с trace_id (OTLP + stdout)
-    HttpProvider(),        # http_requests_total, http_request_duration_seconds
-    PgProvider(),          # db_pool_* (acquired/idle/max/wait), pg traces
-    NatsProvider(),        # nats_messages_*, nats_handle_duration_seconds
-    AppConfigProvider(),   # сюда caller кладёт все *Config (asymmetry note)
-)
-```
-
-### Обязательные resource attrs
-
-| Attr | Значение | Кто ставит |
-|---|---|---|
-| `service.name` | `"backend"` (или другое) | приложение (`telemetry.Config`) |
-| `service.version` | semver / git short-sha | приложение |
-| `deployment.environment.name` | `prod` / `staging` / `smoke` | приложение |
-| `tenant` | имя tenant'а | **корп otel-collector** (из `X-Scope-OrgID`) |
-| `service.namespace` | == `tenant` (инвариант) | **корп otel-collector** (force-upsert) |
-
-`tenant` и `service.namespace` приложение **не** выставляет (кроме local-dev через
-`OTEL_TENANT`) — их ставит/перезатирает корп otel-collector. Инвариант
-`service_namespace == tenant`: логи всегда находятся через `{service_namespace="<tenant>"}`.
+Обязательные resource attrs (`service.name`, `service.version`,
+`deployment.environment.name`) и настройку экспортёра caller задаёт в своём
+OTel-SDK — pylibinfra их не хардкодит.
 
 ### Business-метрики (`biz_*`)
 
@@ -167,14 +131,14 @@ logins = counter(meter, "auth", "login_attempts")  # → biz_auth_login_attempts
 logins.add(1, {"result": "ok"})
 ```
 
-`Apps · Business` автоматически рендерит панели для всех `biz_*_total`.
+`bizmetric` форсит конвенцию имён `biz_<domain>_<event>_*` — helper `raise`'ит при
+нарушении. `meter` caller получает из своего OTel-SDK.
 
 ### Что эмитит каждый пакет (короткий reference)
 
 | Пакет | Метрики | Спаны |
 |---|---|---|
-| `telemetry` | runtime (`system_*`, process/runtime метрики) | — |
-| `logkit` | `log_messages_total{level}` | — (structlog инжектит `trace_id`/`span_id`) |
+| `logkit` | `log_messages_total{level}` | — |
 | `httpkit` | `http_requests_total`, `http_request_duration_seconds`, `http_panics_total`, `http_max_body_rejections_total`, `http_idempotency_total` | server span (otel-asgi) |
 | `httpclient` | `http_client_request_duration_seconds`, `http_client_breaker_*`, `http_client_retry_attempts_total` | client span |
 | `pgkit` | `db_pool_*` | per-query span (otel-asyncpg) |
@@ -188,20 +152,19 @@ logins.add(1, {"result": "ok"})
 
 ### Anti-patterns
 
-- **Не выставлять `service.namespace` руками** — otel-collector force-сетит = tenant.
-- **Не выпускать `:latest` Docker tag** для проектного API — `<sha>` или `<semver>`.
 - **Не плодить biz-метрики обходя `bizmetric.counter`** — helper форсит конвенцию.
+- **Не хардкодить resource attrs в китах** — их выставляет OTel-SDK консьюмера.
 
 ## Стабильность API
 
 Публичные `pydantic-settings`-структуры конфигов (`pgkit.PoolConfig`,
 `pgkit.ReplicaConfig`, `storagekit.Config`, `httpkit.Config`,
-`httpkit.SecurityHeadersConfig`, `httpkit.IdempotencyConfig`, `telemetry.Config`,
+`httpkit.SecurityHeadersConfig`, `httpkit.IdempotencyConfig`,
 `logkit.Config`, `logkit.RedactConfig`, `authnkit.Argon2idParams`,
 `cachekit.Config`, `flagkit.Config`, `natskit.Config`, `httpclient.BreakerConfig`,
 `httpclient.BackendsConfig`,
 `httpkit.SharedSecretConfig`, `tgbotkit.Config`, `tgbotkit.I18nConfig`,
-`grpckit.Config`, `config.VaultClientConfig`) — **part of public API**. Менять имена полей или их
+`grpckit.Config`) — **part of public API**. Менять имена полей или их
 env-alias'ы = breaking change, идёт мажорным апгрейдом.
 
 ## Версионирование

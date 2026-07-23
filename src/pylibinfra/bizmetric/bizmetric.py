@@ -5,12 +5,12 @@
   - histogram → суффикс ``_seconds``
   - gauge     → без суффикса
 
-Resource-attrs (service.name, tenant, environment) добавляются OTel SDK
-автоматически — повторно их в labels класть не нужно.
+Метрики эмитятся через vendor-neutral OTel-meter (``metrics.get_meter("app")``);
+без выставленного MeterProvider'а — no-op.
 
-Префикс ``biz_`` нужен, чтобы дашборд "Apps/business" использовал автодискавер
-``{__name__=~"biz_.*"}`` без ручного списка метрик. Невалидные domain/name
-(не snake_case ASCII) → ValueError (аналог panic в golibinfra).
+Префикс ``biz_`` группирует бизнес-метрики под общий автодискавер
+``{__name__=~"biz_.*"}``. Невалидные domain/name (не snake_case ASCII) →
+ValueError (аналог panic в golibinfra).
 """
 
 import re

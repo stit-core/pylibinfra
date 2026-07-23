@@ -1,18 +1,18 @@
 # pylibinfra — гайд для агентов
 
 Набор инфраструктурных Python-библиотек («кит'ов») для сервисов stit:
-observability, auth, БД, messaging, кэш, аудит и т.д. Идейный и структурный аналог
+auth, БД, messaging, кэш, аудит и т.д. Идейный и структурный аналог
 `golibinfra` для Python-стека. Не сервис и не stack — пакеты, которые импортирует
 бизнес-репо (`uv add "pylibinfra @ git+…@vX.Y.Z"`).
 
 Этот файл — **ядро (always-on) + роутер**. Полная human-доку — `README.md`
-(использование, observability, стабильность API, версионирование). Контекстные
+(использование, наблюдаемость, стабильность API, версионирование). Контекстные
 правила — `.claude/rules/` (path-scoped). Процедуры — `.claude/skills/`.
 
 ## Точка входа
 
 - **Добавить новый kit** — skill `/add-kit` (scaffold пакета по конвенциям:
-  `Provider`/dishka, observability-by-default, pydantic-settings Config, тесты,
+  `Provider`/dishka, pydantic-settings Config, тесты,
   testkit-сабпакет, строка в README).
 - **Выпустить версию** — skill `/release` (bump версии в `pyproject.toml` +
   `git tag vX.Y.Z` + push + гайд апдейта консьюмера).
@@ -32,30 +32,28 @@ uv run pytest                     # полные (testcontainers; нужен Doc
 
 ## Карта пакетов
 
-Полный список с эмитимыми сигналами — `README.md § Пакеты`. Кратко: `telemetry`
-(OTel bootstrap), `logkit` (structlog + PII-redact + trace-id), `httpkit`
+Полный список с эмитимыми сигналами — `README.md § Пакеты`. Кратко: `logkit`
+(structlog + PII-redact, stdout/file), `httpkit`
 (FastAPI server + middleware), `httpclient` (httpx + retry + circuit breaker),
-`pgkit` (asyncpg pool + otel), `natskit` (NATS/JetStream), `outboxkit` (outbox +
+`pgkit` (asyncpg pool), `natskit` (NATS/JetStream), `outboxkit` (outbox +
 lag-reporter), `authnkit` (JWT/Argon2id/TOTP/RBAC), `cachekit` (Redis +
 idempotency), `bizmetric` (business-метрики), `auditkit`, `bruteforcekit`,
-`flagkit`, `clockkit`, `timerkit`, `config` (env + Vault), `testkit`
+`flagkit`, `clockkit`, `timerkit`, `config` (env), `testkit`
 (testcontainers helpers).
 
-## Инварианты, на которые завязан корп-стек
+## Инварианты
 
-Полно — `README.md § Minimum viable observability`. Чек-лист:
+Полно — `README.md § Наблюдаемость`. Чек-лист:
 
-1. **`service.name` / `service.version` / `deployment.environment.name`** —
-   выставляет приложение через `telemetry.Config`. Без них дашборды Apps/* теряют
-   `$service`/`$env`.
-2. **`tenant` / `service.namespace`** — приложение **не** выставляет (кроме
-   local-dev через `OTEL_TENANT`); их ставит корп `otel-collector`. Выставишь сам —
-   будет молча перезатёрто.
-3. **`biz_<domain>_<event>_total|_seconds|<gauge>`** — единственная конвенция имён
+1. **`biz_<domain>_<event>_total|_seconds|<gauge>`** — единственная конвенция имён
    business-метрик; enforce'ится `bizmetric.counter/histogram/gauge` (raise при нарушении).
+2. Киты инструментированы OpenTelemetry-API через глобальный provider; без
+   сконфигурированного provider'а — **no-op**. Экспортёр/бэкенд и resource attrs
+   (`service.name`/`service.version`/`deployment.environment.name`) задаёт консьюмер
+   в своём OTel-SDK — не хардкодить в китах.
 
-Правка `telemetry/`, `logkit/`, `bizmetric/` или resource-attrs init-флоу — breaking
-для всех сервисов; сверяйся с корп obs-контрактом перед изменением инвариантов.
+Правка `logkit/`, `bizmetric/` или эмитимых метрик/labels/span-attrs — breaking для
+консьюмеров; сверяйся перед изменением инвариантов.
 
 ## Стиль (инварианты)
 
@@ -70,8 +68,9 @@ idempotency), `bizmetric` (business-метрики), `auditkit`, `bruteforcekit`
   (env-имена) менять = breaking → новый major.
 - **Asymmetry note.** Provider kit'а **не** provide'ит свой Config — caller
   регистрирует сам (типично через App-Provider). Дешёвый mode — `new_config()`.
-- **Observability by default.** Новый kit эмитит метрики/спаны через otel-python
-  SDK, читая resource attrs из telemetry (не хардкодить).
+- **Observability opt-in.** Новый kit эмитит метрики/спаны через otel-python API
+  (глобальный provider; no-op без него), не хардкодит resource attrs — их задаёт
+  OTel-SDK консьюмера.
 - **Минимум зависимостей.** Перед новым import — проверь stdlib + существующие deps;
   каждый новый import обсуждается с пользователем.
 - **Комментарии — только WHY** (rule `.claude/rules/comments.md`).
@@ -91,11 +90,10 @@ idempotency), `bizmetric` (business-метрики), `auditkit`, `bruteforcekit`
 
 ### Сначала спросить
 - Менять public Config-структуры (имена полей, env-alias'ы, типы) — breaking, нужен major.
-- Менять `telemetry/`/`bizmetric/`/resource-attrs — затрагивает все сервисы.
+- Менять `bizmetric/` или эмитимые метрики/labels/span-attrs — затрагивает консьюмеров.
 - Добавлять новую зависимость в `pyproject.toml`.
 
 ### Не делать никогда
-- Выставлять `tenant`/`service.namespace` дефолтом в `telemetry.Config`.
 - `:latest` в примерах. `print()` / `logging.getLogger()` напрямую в production-коде —
   только `logkit.Logger`.
 - Коммитить product-specific логику — pylibinfra общая lib; доменное живёт в сервис-репо.

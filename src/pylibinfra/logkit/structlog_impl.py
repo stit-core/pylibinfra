@@ -1,7 +1,7 @@
-"""Конфигурация structlog → stdlib logging: fan-out записи в JSON-stdout (при
-LOG_STDOUT) и в OTel LoggerProvider через LoggingHandler (при use_otel).
-Метрики/трейсы в stdout не идут — это только log pipeline. Trace-context и
-счётчик log_messages_total — processor'ы в общей цепочке.
+"""Конфигурация structlog → stdlib logging: структурированный JSON-вывод в
+stdout (при LOG_STDOUT). Trace-context (trace_id/span_id из ambient-span'а) и
+счётчик log_messages_total — processor'ы в общей цепочке; оба используют
+vendor-neutral OTel-API и без выставленного provider'а — no-op.
 """
 
 from __future__ import annotations
@@ -14,8 +14,6 @@ from typing import Any
 
 import structlog
 from opentelemetry import metrics, trace
-from opentelemetry._logs import get_logger_provider
-from opentelemetry.instrumentation.logging.handler import LoggingHandler
 from opentelemetry.metrics import Counter
 from structlog.types import EventDict, Processor, WrappedLogger
 
@@ -74,7 +72,6 @@ def configure(
     cfg: Config,
     *,
     redact_cfg: RedactConfig | None = None,
-    use_otel: bool = True,
 ) -> None:
     global _log_counter
     _log_counter = metrics.get_meter("app").create_counter("log_messages_total")
@@ -105,8 +102,6 @@ def configure(
         stream = logging.StreamHandler(sys.stdout)
         stream.setFormatter(_JsonFormatter())
         root.addHandler(stream)
-    if use_otel:
-        root.addHandler(LoggingHandler(logger_provider=get_logger_provider()))
     root.setLevel(_LEVELS.get(cfg.level.lower(), logging.INFO))
 
 

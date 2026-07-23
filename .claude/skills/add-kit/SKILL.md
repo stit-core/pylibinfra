@@ -1,6 +1,6 @@
 ---
 name: add-kit
-description: Добавить новый kit (пакет) в pylibinfra по конвенциям библиотеки — package-doc, dishka Provider, опц. pydantic-settings Config, observability-by-default, тесты, testkit-сабпакет, строка в README. Активируй когда юзер говорит "/add-kit", "добавь kit", "новый пакет в pylibinfra", "заведи <name>kit", "нужен переиспользуемый примитив X". Для правки существующего kit'а скилл НЕ нужен — это прямой Edit.
+description: Добавить новый kit (пакет) в pylibinfra по конвенциям библиотеки — package-doc, dishka Provider, опц. pydantic-settings Config, тесты, testkit-сабпакет, строка в README. Активируй когда юзер говорит "/add-kit", "добавь kit", "новый пакет в pylibinfra", "заведи <name>kit", "нужен переиспользуемый примитив X". Для правки существующего kit'а скилл НЕ нужен — это прямой Edit.
 ---
 
 # Skill: add-kit
@@ -36,16 +36,12 @@ description: Добавить новый kit (пакет) в pylibinfra по к�
    `Field(validation_alias="ENV_NAME")` — это **public API** (имена полей и
    env-alias'ы попадут в `README.md § Стабильность API`). Provider Config **не**
    provide'ит (asymmetry note) — caller регистрирует сам; добавь `new_config()`-фабрику.
-4. **Observability by default.** Если kit делает I/O или несёт нагрузку — эмить
-   метрики/спаны через otel-python SDK (`metrics.get_meter("app")` /
-   `trace.get_tracer("app")`). Не выставляй `tenant`/`service.namespace` — их
-   ставит control-plane.
-5. **testkit-сабпакет (опц.).** Нужны helpers для тестов консьюмера — заведи
+4. **testkit-сабпакет (опц.).** Нужны helpers для тестов консьюмера — заведи
    `src/pylibinfra/testkit/<name>test/`, где `<name>` — имя кита **без** суффикса
    `kit` (`cachekit` → `testkit/cachetest/`).
-6. **Документация.** Добавь строку в `README.md § Пакеты` (slug + ответственность +
-   что эмитит). Без этого kit «невидим».
-7. **Gate.** `ruff format --check .` + `ruff check .` + `mypy src tests` +
+5. **Документация.** Добавь строку в `README.md § Пакеты` (slug + ответственность).
+   Без этого kit «невидим».
+6. **Gate.** `ruff format --check .` + `ruff check .` + `mypy src tests` +
    `pytest` зелёные перед claim «готово».
 
 ## Следующий шаг

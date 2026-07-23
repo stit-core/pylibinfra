@@ -1,4 +1,4 @@
-"""logkit — structlog-logger с OTel-bridge, trace-correlation и PII-redact."""
+"""logkit — structlog-logger с JSON-stdout, trace-correlation и PII-redact."""
 
 from .config import Config
 from .logger import Logger, nop

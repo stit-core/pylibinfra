@@ -2,9 +2,8 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-# service.name/version/environment не дублируются как record attrs — они уже в
-# OTel resource attrs (telemetry.init). ServiceConfig остаётся для test-сценариев
-# и не-OTel вывода, но модулем как record-attrs не инжектится.
+# service.name/version/environment — идентификация сервиса для test-сценариев;
+# модулем как record-attrs не инжектится.
 class ServiceConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
 

@@ -1,9 +1,9 @@
 """config — композиция источников конфигурации.
 
 env читается нативно pydantic-settings (базовый слой), Source'ы накладываются
-поверх как override'ы (типично Vault): load() собирает их значения в init-kwargs
-модели, а init-kwargs в pydantic-settings приоритетнее env — поэтому Vault
-перезатирает env-default'ы (как в golibinfra: env-defaults → vault-override).
+поверх как override'ы: load() собирает их значения в init-kwargs модели, а
+init-kwargs в pydantic-settings приоритетнее env — поэтому Source перезатирает
+env-default'ы (как в golibinfra: env-defaults → override).
 """
 
 from typing import Any, Protocol

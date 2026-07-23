@@ -1,11 +1,9 @@
-"""logkit — структурный logger поверх structlog с OTel-bridge'ом.
+"""logkit — структурный logger поверх structlog.
 
-Каждый record уходит в OTel LoggerProvider (OTLP HTTP → corp Loki) и, при
-LOG_STDOUT (default), дублируется в JSON-stdout; оба sink'а автоматически
-получают trace_id/span_id из текущего span'а (ambient через contextvars —
-поэтому, в отличие от Go-slog, ctx в сигнатуру не пробрасывается). Метрики и
-трейсы в stdout не идут — это только log pipeline. Поддерживает PII-redact
-(regex-фильтры через RedactConfig, LOG_REDACT_ENABLED). Эмитит
+Каждый record при LOG_STDOUT (default) пишется в JSON-stdout и автоматически
+получает trace_id/span_id из текущего span'а (ambient через contextvars —
+поэтому, в отличие от Go-slog, ctx в сигнатуру не пробрасывается). Поддерживает
+PII-redact (regex-фильтры через RedactConfig, LOG_REDACT_ENABLED). Эмитит
 log_messages_total{level}.
 """
 

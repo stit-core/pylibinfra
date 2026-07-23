@@ -23,8 +23,8 @@ description: Выпустить новую версию pylibinfra — bump ве
 1. **Gate зелёный.** `ruff format --check .` + `ruff check .` + `mypy src tests` +
    `pytest` — все. Красное → не релизим.
 2. **Версия (semver).** Pre-v1.0.0: **minor может быть breaking**. Breaking change
-   (переименование public-полей Config/env-alias'ов, смена сигнатур, изменение корп
-   obs-инвариантов) → bump minor (`v0.X.0`); багфикс/добавление без слома → patch
+   (переименование public-полей Config/env-alias'ов, смена сигнатур) → bump minor
+   (`v0.X.0`); багфикс/добавление без слома → patch
    (`v0.X.Y`). Спроси у пользователя версию, если неочевидно.
 3. **Bump + тег + push** (пуш — гейт человека, делаем по явной просьбе):
    ```bash
@@ -39,8 +39,6 @@ description: Выпустить новую версию pylibinfra — bump ве
    uv add "pylibinfra @ git+https://git.stit.tech/stit-core/pylibinfra.git@vX.Y.Z"
    uv sync
    ```
-5. **Если менялись эмитимые сигналы** (метрики/labels/span-attrs) — напомни обновить
-   инвентарь observability на стороне control-plane (`corp-infra-template`).
 
 ## Нет тупика
 

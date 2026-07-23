@@ -14,7 +14,7 @@ def _last_record(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
 
 
 def test_emits_structured_json(capsys: pytest.CaptureFixture[str]) -> None:
-    configure(Config(), redact_cfg=RedactConfig(), use_otel=False)
+    configure(Config(), redact_cfg=RedactConfig())
     new_logger().info("user login", user_id=42, result="ok")
     rec = _last_record(capsys)
     assert rec["message"] == "user login"
@@ -24,7 +24,7 @@ def test_emits_structured_json(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_with_binds_fields(capsys: pytest.CaptureFixture[str]) -> None:
-    configure(Config(), redact_cfg=RedactConfig(), use_otel=False)
+    configure(Config(), redact_cfg=RedactConfig())
     new_logger().with_(request_id="abc").info("hi")
     rec = _last_record(capsys)
     assert rec["request_id"] == "abc"
@@ -32,7 +32,7 @@ def test_with_binds_fields(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_redacts_pii(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOG_REDACT_ENABLED", "true")
-    configure(Config(), redact_cfg=RedactConfig(), use_otel=False)
+    configure(Config(), redact_cfg=RedactConfig())
     new_logger().info("contact", email="john@example.com")
     rec = _last_record(capsys)
     assert "[REDACTED]" in rec["email"]
@@ -43,7 +43,7 @@ def test_redacts_nested_dict(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("LOG_REDACT_ENABLED", "true")
-    configure(Config(), redact_cfg=RedactConfig(), use_otel=False)
+    configure(Config(), redact_cfg=RedactConfig())
     new_logger().info("contact", payload={"inner": {"email": "john@example.com"}})
     rec = _last_record(capsys)
     assert rec["payload"]["inner"]["email"] == "[REDACTED]"
@@ -53,7 +53,7 @@ def test_redacts_inside_list(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("LOG_REDACT_ENABLED", "true")
-    configure(Config(), redact_cfg=RedactConfig(), use_otel=False)
+    configure(Config(), redact_cfg=RedactConfig())
     new_logger().info("contacts", emails=["a@example.com", "plain"])
     rec = _last_record(capsys)
     assert rec["emails"] == ["[REDACTED]", "plain"]
@@ -63,7 +63,7 @@ def test_redacts_card_like_int(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("LOG_REDACT_ENABLED", "true")
-    configure(Config(), redact_cfg=RedactConfig(), use_otel=False)
+    configure(Config(), redact_cfg=RedactConfig())
     new_logger().info("pay", card=4111111111111111, tg_id=42)
     rec = _last_record(capsys)
     # длинный int, похожий на карту, — затёрт строкой
@@ -74,7 +74,7 @@ def test_redacts_card_like_int(
 
 
 def test_injects_trace_context(capsys: pytest.CaptureFixture[str]) -> None:
-    configure(Config(), redact_cfg=RedactConfig(), use_otel=False)
+    configure(Config(), redact_cfg=RedactConfig())
     provider = TracerProvider()
     with provider.get_tracer("test").start_as_current_span("op"):
         new_logger().info("traced")
@@ -87,6 +87,6 @@ def test_stdout_disabled_no_output(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("LOG_STDOUT", "false")
-    configure(Config(), redact_cfg=RedactConfig(), use_otel=False)
+    configure(Config(), redact_cfg=RedactConfig())
     new_logger().info("should not reach stdout")
     assert capsys.readouterr().out.strip() == ""

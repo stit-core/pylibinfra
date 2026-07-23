@@ -4,7 +4,7 @@ import pytest
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from pylibinfra.config import VaultClientConfig, VaultSource, load, new_vault_client
+from pylibinfra.config import load
 
 
 class _Settings(BaseSettings):
@@ -63,42 +63,3 @@ def test_validation_error_does_not_leak_secret() -> None:
     assert "not-an-int" not in msg
     assert "tok" in msg
     assert "n" in msg
-
-
-def test_new_vault_client_none_when_no_addr() -> None:
-    assert new_vault_client(VaultClientConfig()) is None
-
-
-class _FakeKVv2:
-    def read_secret_version(
-        self, *, path: str, mount_point: str, raise_on_deleted_version: bool
-    ) -> dict[str, Any]:
-        assert mount_point == "secret"
-        assert path == "myapp"
-        assert raise_on_deleted_version is True
-        return {"data": {"data": {"jwt_secret": "xyz"}}}
-
-
-class _FakeKV:
-    v2 = _FakeKVv2()
-
-
-class _FakeSecrets:
-    kv = _FakeKV()
-
-
-class _FakeClient:
-    secrets = _FakeSecrets()
-
-
-def test_vault_source_maps_to_env_name() -> None:
-    client: Any = _FakeClient()
-    dst: dict[str, Any] = {}
-    VaultSource(client, "secret/myapp", mapping={"jwt_secret": "JWT_SECRET"}).apply(dst)
-    assert dst == {"JWT_SECRET": "xyz"}
-
-
-def test_vault_source_noop_without_client() -> None:
-    dst: dict[str, Any] = {}
-    VaultSource(None, "secret/myapp").apply(dst)
-    assert dst == {}
