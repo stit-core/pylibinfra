@@ -32,7 +32,7 @@ uv run pytest                     # полные (testcontainers; нужен Doc
 
 ## Карта пакетов
 
-Полный список с эмитимыми сигналами — `README.md § Пакеты`. Кратко: `logkit`
+Полный список с эмитимыми сигналами — `README.md § Пакеты`. Кратко: `telemetry` (opt-in OTel bootstrap), `logkit`
 (structlog + PII-redact, stdout/file), `httpkit`
 (FastAPI server + middleware), `httpclient` (httpx + retry + circuit breaker),
 `pgkit` (asyncpg pool), `natskit` (NATS/JetStream), `outboxkit` (outbox +

@@ -13,7 +13,7 @@ auth, БД, messaging, кэш, аудит, storage. Каждый kit — `dishka
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563eb)](LICENSE)
 [![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/stit-public)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB)](#использование-в-проекте)
-[![Kits](https://img.shields.io/badge/kits-19-0ea5e9)](#пакеты)
+[![Kits](https://img.shields.io/badge/kits-20-0ea5e9)](#пакеты)
 
 </div>
 
@@ -84,6 +84,7 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | `cachekit` | Redis-обёртка: `Cache`, `get_json`/`set_json`, `invalidate_by_tag`; `IdempotencyStore` для `httpkit` |
 | `flagkit` | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.bool/str` |
 | `timerkit` | Periodic jobs через asyncio: регистрация задач с интервалом, lifecycle-aware |
+| `telemetry` | Opt-in bootstrap OTel SDK: tracer/meter/logger providers + OTLP HTTP-экспортёры (endpoint/Bearer из env); resource-атрибуты `service.*`, опц. `tenant`; system-метрики |
 | `logkit` | `Logger` поверх structlog; JSON → stdout/file (`LOG_STDOUT`); redact (PII-фильтры) |
 | `authnkit` | `Hasher` (Argon2id); `JWTConfig` + sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`has` для RBAC |
 | `bizmetric` | Helper для бизнес-метрик: `counter/histogram/gauge`, форсит конвенцию `biz_<domain>_<event>_*` (raise при нарушении) |
@@ -115,7 +116,9 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 
 Киты инструментированы **OpenTelemetry-API** (спаны + метрики) через глобальный
 провайдер otel-python. Без сконфигурированного OTel-provider'а инструментация —
-**no-op**: экспортёр и бэкенд подключает консьюмер сам. `logkit` пишет
+**no-op**: экспортёр и бэкенд подключает консьюмер сам — готовым opt-in
+китом `telemetry` (OTLP HTTP-экспортёры, endpoint/Bearer из env) или
+собственной проводкой OTel SDK. `logkit` пишет
 structlog-JSON в stdout/file независимо от OTel.
 
 Обязательные resource attrs (`service.name`, `service.version`,
