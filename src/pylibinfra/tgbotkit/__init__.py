@@ -36,6 +36,11 @@ from .i18n import (
     build_translator,
     install_i18n,
 )
+from .markdown import (
+    escape_markdown_v2,
+    escape_markdown_v2_code,
+    escape_markdown_v2_link,
+)
 from .metrics import TgInstruments, new_instruments
 from .module import (
     BotProvider,
@@ -106,6 +111,9 @@ __all__ = [
     "build_subscription_link",
     "build_translator",
     "default_error_ux",
+    "escape_markdown_v2",
+    "escape_markdown_v2_code",
+    "escape_markdown_v2_link",
     "install_i18n",
     "new_config",
     "new_instruments",

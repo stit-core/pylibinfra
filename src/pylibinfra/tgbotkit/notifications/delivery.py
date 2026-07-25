@@ -6,7 +6,8 @@ Chat/User для AUTO-show-mode), EDIT не гарантирован, изоля
 
 Сбой доставки ПРОБРАСЫВАЕТСЯ к звонящему (notifier-handler) ради at-least-once:
 исключение доходит до natskit.JsBus._handle_one → msg.nak() → redelivery (там же
-лог сбоя на уровне консьюмера). Здесь — только установка/сброс request_id.
+лог сбоя на уровне консьюмера). Здесь — только установка/сброс request_id и
+plain-фолбэк на битой разметке (см. send_message).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.state import State
 from aiogram_dialog import BgManagerFactory, StartMode
 
@@ -63,8 +65,38 @@ class Delivery:
             _httpclient_request_id.reset(token)
 
     async def send_message(self, *, chat_id: int, text: str, **kwargs: Any) -> None:
+        """Шлёт текст в parse_mode бота, с фолбэком на plain при отбитой разметке.
+
+        Битую разметку (неэкранированный спецсимвол MarkdownV2, чужой тег в HTML)
+        redelivery не вылечит: те же 400 съедят max_deliver и сообщение уйдёт в
+        term — то есть потеряется молча. Для алертинга содержимое важнее
+        оформления, поэтому такой ответ Telegram не пробрасывается, а сообщение
+        переотправляется без разметки. Прочие 400 (нет чата, бан) — наверх, как и
+        раньше: они про доставку, а не про текст.
+        """
         token = _httpclient_request_id.set(f"tg-notify-{chat_id}")
         try:
-            await self._bot.send_message(chat_id, text, **kwargs)
+            try:
+                await self._bot.send_message(chat_id, text, **kwargs)
+            except TelegramBadRequest as exc:
+                if not _is_markup_error(exc):
+                    raise
+                self._log.warn(
+                    "markup rejected by telegram, resending as plain text",
+                    chat_id=chat_id,
+                    error=exc.message,
+                )
+                # явный None (а не Default) отменяет parse_mode бота на этот вызов
+                await self._bot.send_message(chat_id, text, **{**kwargs, "parse_mode": None})
         finally:
             _httpclient_request_id.reset(token)
+
+
+def _is_markup_error(exc: TelegramBadRequest) -> bool:
+    """Ошибка про разметку текста, а не про доставку.
+
+    Telegram отдаёт весь класс (незакрытая сущность, зарезервированный символ,
+    чужой тег) одной формулировкой `can't parse entities`; исторический вариант —
+    `can't parse message text`. Общий префикс и ловим.
+    """
+    return "can't parse" in exc.message.lower()
