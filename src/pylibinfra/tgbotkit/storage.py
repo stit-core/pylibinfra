@@ -22,4 +22,10 @@ def build_storage(client: redis.Redis, state_ttl: int = 0, data_ttl: int = 0) ->
 
 
 def build_isolation(client: redis.Redis) -> RedisEventIsolation:
-    return RedisEventIsolation(client)
+    # key_builder обязан совпадать со storage: aiogram_dialog адресует контексты
+    # через destiny, а дефолтный builder на таком ключе бросает ValueError —
+    # падает КАЖДЫЙ апдейт бота с диалогами.
+    return RedisEventIsolation(
+        client,
+        key_builder=DefaultKeyBuilder(with_bot_id=True, with_destiny=True),
+    )

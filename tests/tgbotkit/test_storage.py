@@ -27,3 +27,11 @@ def test_build_storage_passes_ttl_and_maps_zero_to_none() -> None:
 def test_build_isolation() -> None:
     iso = build_isolation(FakeRedis())  # type: ignore[arg-type]
     assert isinstance(iso, RedisEventIsolation)
+
+
+def test_build_isolation_isolates_bot_and_destiny() -> None:
+    # aiogram_dialog адресует контексты диалога через destiny: с дефолтным
+    # builder'ом изоляция роняет ValueError на каждом апдейте.
+    iso = build_isolation(FakeRedis())  # type: ignore[arg-type]
+    assert iso.key_builder.with_bot_id is True
+    assert iso.key_builder.with_destiny is True
