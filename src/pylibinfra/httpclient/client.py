@@ -79,7 +79,9 @@ class Client:
     async def post(self, url: str, **kwargs: Any) -> httpx.Response:
         return await self.request("POST", url, **kwargs)
 
-    async def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+    async def request(
+        self, method: str, url: str, *, retries: int | None = None, **kwargs: Any
+    ) -> httpx.Response:
         headers = httpx.Headers(kwargs.pop("headers", None))
         rid = request_id.get()
         # Явно переданный заголовок приоритетнее contextvar (как RequestIDFrom в Go,
@@ -97,7 +99,7 @@ class Client:
             status = "error"
             start = time.perf_counter()
             try:
-                resp = await self._execute(method, url, **kwargs)
+                resp = await self._execute(method, url, retries=retries, **kwargs)
                 status = str(resp.status_code)
                 return resp
             except Exception as exc:
@@ -110,23 +112,30 @@ class Client:
                     {"host": host, "method": method, "status": status},
                 )
 
-    async def _execute(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+    async def _execute(
+        self, method: str, url: str, *, retries: int | None, **kwargs: Any
+    ) -> httpx.Response:
         # Брейкер оборачивает всю retry-последовательность (как
         # breaker.Execute(doWithRetry) в Go): открыт → OpenedState на входе,
         # быстрый фейл без обращения к transport.
         brk = await self._breaker.get_breaker(self._cfg.breaker.name)
         async with brk:
-            return await self._do_with_retry(method, url, **kwargs)
+            return await self._do_with_retry(method, url, retries=retries, **kwargs)
 
-    async def _do_with_retry(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+    async def _do_with_retry(
+        self, method: str, url: str, *, retries: int | None, **kwargs: Any
+    ) -> httpx.Response:
         host = httpx.URL(url).host or self._http.base_url.host
+        # Per-call бюджет (ApiClient гейтит мутации без Idempotency-Key нулём) поверх
+        # конфигного дефолта.
+        max_retries = self._cfg.max_retries if retries is None else retries
 
         def _count_retry(_: RetryCallState) -> None:
             self._instr.retry_attempts.add(1, {"host": host})
 
         try:
             async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(self._cfg.max_retries + 1),
+                stop=stop_after_attempt(max_retries + 1),
                 wait=_Wait(self._cfg.retry_wait),
                 retry=retry_if_exception(_is_retryable),
                 reraise=True,
@@ -141,7 +150,7 @@ class Client:
             # Исчерпали ретраи на 5xx: поднимаем как ошибку, чтобы брейкер засчитал
             # фейл (Go возвращает error «server error after N retries»).
             raise httpx.HTTPStatusError(
-                f"httpclient: server error after {self._cfg.max_retries} retries",
+                f"httpclient: server error after {max_retries} retries",
                 request=exc.response.request,
                 response=exc.response,
             ) from None

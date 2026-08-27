@@ -80,7 +80,7 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | `natskit` | Pub/sub поверх NATS: `Bus` (`subscribe`/`subscribe_queue`), `publish_json`/`subscribe_json`/`subscribe_queue_json`, опц. JetStream `StreamBus` (батч-async публикация + дедуп по `Nats-Msg-Id`; poison-обработка `NATS_JS_MAX_DELIVER`→DLQ/term, NAK с backoff), subject/headers сообщения через `subject_from_context()`/`headers_from_context()`; panic recovery + backpressure (`NATS_MAX_IN_FLIGHT`) |
 | `tgbotkit` | aiogram-bootstrap (как httpkit для FastAPI): `BotProvider`, polling/webhook `BotRunner`, outer-цепочка (request-id/dedup/throttle/RED+span/recovery), error-UX, `setup_dialogs`; точки расширения `RouterBundle`/`CommandBundle`/`NotifierBundle`/`ErrorUX`; подсистемы i18n (fluent)/notifications (JetStream; plain-фолбэк, если Telegram отверг разметку)/payments (XTR)/webapp (initData); `escape_markdown_v2`/`_code`/`_link` — вставка динамики в MarkdownV2 без потери сообщения. **extra `[tgbotkit]`** (aiogram, aiogram-dialog, fluent.runtime) |
 | `grpckit` | grpc.aio-сервер (как httpkit для FastAPI): `GrpcProvider`, `Server` (bind UDS и/или TCP, graceful-drain), интерсепторы OTel-трейс + observability (метрики/access-log/recovery), стандартный `grpc.health.v1`; точки расширения `ServicerBundle` (регистраторы servicer'ов консьюмера) / `ProbeBundle` (readiness). **extra `[grpckit]`** (grpcio, grpcio-health-checking, opentelemetry-instrumentation-grpc) |
-| `httpclient` | HTTP-клиент поверх httpx с retry (tenacity), circuit breaker (purgatory), OTel и автопередачей `X-Request-ID`; `ApiClient` — JSON-слой с typed-ошибками, `Idempotency-Key` и именованными бэкендами (`ApiClients`) |
+| `httpclient` | HTTP-клиент поверх httpx с retry (tenacity), circuit breaker (purgatory), OTel и автопередачей `X-Request-ID`; `ApiClient` — JSON-слой: декод в wire-модель (`model=`), таксономия typed-ошибок (`NotFound`/`Conflict`/`Auth`/`Forbidden`/`InvalidRequest`/`RateLimited`/`Contract`/`Unavailable` + status/retry_after/body-сниппет), ретраи мутаций только с `Idempotency-Key`, именованные бэкенды (`ApiClients` из `BackendConfig`: обязательный `base_url`, статические `headers`, breaker-имя = ключ бэкенда) |
 | `cachekit` | Redis-обёртка: `Cache`, `get_json`/`set_json`, `invalidate_by_tag`; `IdempotencyStore` для `httpkit` |
 | `flagkit` | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.bool/str` |
 | `timerkit` | Periodic jobs через asyncio: регистрация задач с интервалом, lifecycle-aware |
@@ -165,7 +165,7 @@ logins.add(1, {"result": "ok"})
 `httpkit.SecurityHeadersConfig`, `httpkit.IdempotencyConfig`,
 `logkit.Config`, `logkit.RedactConfig`, `authnkit.Argon2idParams`,
 `cachekit.Config`, `flagkit.Config`, `natskit.Config`, `httpclient.BreakerConfig`,
-`httpclient.BackendsConfig`,
+`httpclient.BackendsConfig`, `httpclient.BackendConfig`,
 `httpkit.SharedSecretConfig`, `tgbotkit.Config`, `tgbotkit.I18nConfig`,
 `grpckit.Config`) — **part of public API**. Менять имена полей или их
 env-alias'ы = breaking change, идёт мажорным апгрейдом.

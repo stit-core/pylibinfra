@@ -80,6 +80,22 @@ async def test_transport_error_retries() -> None:
     assert calls == 2
 
 
+async def test_per_call_retries_override_wins_over_config() -> None:
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503)
+
+    c = _client(handler, _cfg(HTTPCLIENT_MAX_RETRIES="3"))
+    with pytest.raises(httpx.HTTPStatusError):
+        await c.request("POST", "http://svc/orders", retries=0)
+    await c.aclose()
+
+    assert calls == 1
+
+
 async def test_request_id_forwarded_from_contextvar() -> None:
     seen: dict[str, str] = {}
 

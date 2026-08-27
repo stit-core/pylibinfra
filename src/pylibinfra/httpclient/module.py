@@ -4,9 +4,9 @@ import httpx
 from dishka import Provider, Scope, provide
 
 from .api import ApiClient, ApiClients
-from .breaker import BREAKER_NAME, BreakerConfig
+from .breaker import BreakerConfig
 from .client import Client
-from .config import BackendsConfig, Config
+from .config import BackendConfig, BackendsConfig, Config
 
 
 # Provider не provide'ит Config (asymmetry note, см. telemetry/module.py) — caller
@@ -38,17 +38,33 @@ class ApiClientsProvider(Provider):
     async def clients(self, cfg: BackendsConfig) -> AsyncIterator[ApiClients]:
         built: dict[str, ApiClient] = {}
         for name, backend in cfg.backends.items():
-            # дефолтное имя breaker'а → имя бэкенда: иначе http_client_breaker_*
-            # метрики разных API схлопнутся в один ряд {"name": "httpclient"}
-            if backend.breaker.name == BREAKER_NAME:
-                backend = backend.model_copy(
-                    update={"breaker": backend.breaker.model_copy(update={"name": name})}
-                )
-            http = httpx.AsyncClient(timeout=backend.timeout, base_url=backend.base_url or "")
-            built[name] = ApiClient(Client(backend, http))
+            built[name] = ApiClient(_build_client(name, backend))
         yield ApiClients(built)
         for api in built.values():
             await api.aclose()
+
+
+def _build_client(name: str, backend: BackendConfig) -> Client:
+    # Runtime-Config собирается из декларации целиком (каждое поле — явно): init-аргументы
+    # приоритетнее env-источников BaseSettings, поэтому глобальные HTTPCLIENT_* не
+    # протекают в именованный бэкенд. Имя breaker'а = ключ бэкенда — per-backend
+    # ряды http_client_breaker_* без коллизий.
+    runtime = Config(
+        timeout=backend.timeout,
+        max_retries=backend.max_retries,
+        retry_wait=backend.retry_wait,
+        base_url=backend.base_url,
+        breaker=BreakerConfig(
+            failure_threshold=backend.breaker.failure_threshold,
+            recovery_timeout=backend.breaker.recovery_timeout,
+            success_threshold=backend.breaker.success_threshold,
+            name=name,
+        ),
+    )
+    http = httpx.AsyncClient(
+        timeout=backend.timeout, base_url=backend.base_url, headers=backend.headers
+    )
+    return Client(runtime, http)
 
 
 def new_config() -> Config:

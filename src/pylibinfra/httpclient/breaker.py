@@ -28,9 +28,11 @@ class BreakerConfig(BaseSettings):
     success_threshold: int = Field(
         default=3, validation_alias="HTTPCLIENT_BREAKER_SUCCESS_THRESHOLD"
     )
-    # Имя брейкера = label {"name"} в http_client_breaker_* метриках. Уникальное на
-    # каждый именованный backend-клиент → per-API breaker-метрики без коллизий.
-    name: str = Field(default=BREAKER_NAME, validation_alias="HTTPCLIENT_BREAKER_NAME")
+    # Имя брейкера = label {"name"} в http_client_breaker_* метриках. Только код,
+    # НЕ env: глобальная env-ручка перекрывала бы имя каждому именованному бэкенду
+    # и схлопывала их ряды в один. Именованным бэкендам имя ставит ApiClientsProvider
+    # (= ключ бэкенда), одиночному клиенту хватает дефолта.
+    name: str = BREAKER_NAME
 
 
 def new_breaker(cfg: BreakerConfig, instr: Instruments) -> AsyncCircuitBreakerFactory:

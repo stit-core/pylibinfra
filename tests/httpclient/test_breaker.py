@@ -3,7 +3,7 @@ from typing import Any
 import httpx
 import pytest
 
-from pylibinfra.httpclient import BreakerOpenError, Client, Config
+from pylibinfra.httpclient import BreakerConfig, BreakerOpenError, Client, Config
 
 
 def _cfg(**over: object) -> Config:
@@ -49,18 +49,14 @@ async def test_breaker_opens_after_threshold(metrics_view: Any) -> None:
     assert metrics_view.total("http_client_breaker_transitions_total") >= 1
 
 
-async def test_breaker_name_labels_metrics(
-    metrics_view: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Вложенный BreakerConfig читается из ENV (default_factory), не из init-kwargs
-    # Config — поэтому имя/порог брейкера задаём через setenv.
-    monkeypatch.setenv("HTTPCLIENT_BREAKER_FAILURE_THRESHOLD", "2")
-    monkeypatch.setenv("HTTPCLIENT_BREAKER_NAME", "crm")
-
+async def test_breaker_name_labels_metrics(metrics_view: Any) -> None:
+    # Имя брейкера задаётся только кодом (у именованных бэкендов — ApiClientsProvider);
+    # env-ручки нет намеренно: глобальная схлопывала бы per-backend ряды метрик.
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(500)
 
-    c = _client(handler, _cfg())
+    cfg = _cfg().model_copy(update={"breaker": BreakerConfig(failure_threshold=2, name="crm")})
+    c = _client(handler, cfg)
     for _ in range(2):
         with pytest.raises(httpx.HTTPStatusError):
             await c.get("http://svc/ping")
