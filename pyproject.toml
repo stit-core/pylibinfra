@@ -1,6 +1,6 @@
 [project]
 name = "pylibinfra"
-version = "0.5.2"
+version = "0.6.0"
 description = "Инфраструктурные Python-kit'ы с observability из коробки"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -92,7 +92,7 @@ dev = [
     "pytest-cov>=7.1,<8",
     "testcontainers>=4.14,<5",
     "minio>=7.2",  # клиент для testcontainers MinioContainer (storagekit integration)
-    "ruff>=0.15",
+    "ruff>=0.16",
     "mypy>=2.1,<3",
     # OTel SDK — только для тестов: InMemoryMetricReader/MeterProvider/
     # TracerProvider ловят метрики/спаны китов в assert'ах (runtime SDK не шипит)
