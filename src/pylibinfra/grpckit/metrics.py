@@ -1,37 +1,38 @@
-"""GRPCInstruments — OTel-инструменты серверных интерсепторов. Берёт глобальный
-meter `metrics.get_meter("app")` (telemetry.init выставляет provider; без
-telemetry — no-op). Имена: grpc_server_requests_total,
-grpc_server_request_duration_seconds, grpc_server_panics_total.
-"""
+"""Инструменты серверных интерсепторов: RED-метрики gRPC-сервера."""
 
 from __future__ import annotations
 
-from opentelemetry import metrics
-from opentelemetry.metrics import Counter, Histogram, Meter
+from dataclasses import dataclass
 
-_DURATION_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30]
+from opentelemetry.metrics import Counter, Histogram
+
+from pylibinfra._internal import otelkit
 
 
-class GRPCInstruments:
-    req_total: Counter
-    req_duration: Histogram
-    panics_total: Counter
+@dataclass(frozen=True, slots=True)
+class Instruments:
+    """Набор инструментов кита; создаётся вместе с сервером, а не на уровне модуля."""
 
-    def __init__(self, meter: Meter) -> None:
-        self.req_total = meter.create_counter(
+    requests: Counter
+    duration: Histogram
+    panics: Counter
+
+
+def new_instruments() -> Instruments:
+    """Собирает инструменты на meter'е `pylibinfra.grpckit` (no-op без MeterProvider)."""
+    meter = otelkit.meter("grpckit")
+    return Instruments(
+        requests=meter.create_counter(
             "grpc_server_requests_total",
-            description="Total number of gRPC server RPCs by method and status code",
-        )
-        self.req_duration = meter.create_histogram(
+            description="gRPC server RPCs by method and status code",
+        ),
+        duration=otelkit.duration_histogram(
+            meter,
             "grpc_server_request_duration_seconds",
-            description="gRPC server RPC handler duration in seconds",
-            explicit_bucket_boundaries_advisory=_DURATION_BUCKETS,
-        )
-        self.panics_total = meter.create_counter(
+            "gRPC server RPC duration",
+        ),
+        panics=meter.create_counter(
             "grpc_server_panics_total",
-            description="Unhandled exceptions recovered in gRPC handler chain",
-        )
-
-
-def new_instruments() -> GRPCInstruments:
-    return GRPCInstruments(metrics.get_meter("app"))
+            description="Unhandled handler exceptions recovered by the kit",
+        ),
+    )

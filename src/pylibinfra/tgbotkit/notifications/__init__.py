@@ -1,12 +1,11 @@
-"""notifications-подсистема: durable JetStream-подписки (natskit) → безопасная
-доставка в Telegram через Delivery (обёртка над BgManager). Точка расширения —
-Notifier/NotifierBundle (или сахар NotificationRouter.on). Какие subject'ы,
-deliver_*, маппинг user→chat, дедуп-ключи — в шаблоне.
+"""notifications-подсистема: durable-подписки JetStream и доставка их событий в Telegram.
+
+Subject'ы, дедуп-ключи и маппинг «пользователь → чат» — в сервисе; кит ничего не эмитит.
 """
 
 from .dedup import DeliveryDedup
-from .delivery import Delivery
-from .router import DeliverHandler, NotificationRouter
+from .delivery import Delivery, is_markup_error
+from .router import DeliverHandler, NotificationRouter, Route
 from .runner import NotificationRunner
 
 __all__ = [
@@ -15,4 +14,6 @@ __all__ = [
     "DeliveryDedup",
     "NotificationRouter",
     "NotificationRunner",
+    "Route",
+    "is_markup_error",
 ]

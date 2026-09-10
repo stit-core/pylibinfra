@@ -1,60 +1,83 @@
-"""outboxkit — transactional-outbox: Bus вставляет событие в outbox-таблицу в той
-же транзакции, что и бизнес-state; Worker батчами вычитывает unpublished и
-публикует в JetStream через Transport (natskit.StreamBus), помечая published (одним
-batch-update) только подтверждённые PubAck'ом. OUTBOX_PUBLISH_MODE выбирает batch
-(async, best-effort порядок) или ordered (строгий порядок, стоп на первой ошибке).
-Гарантия — at-least-once; id строки уходит как Nats-Msg-Id → переотправка на
-ретрае дедуплицируется стримом. OUTBOX_MAX_ATTEMPTS>0 метит строку dead после N
-неудач; retention партиций — OUTBOX_RETENTION_MONTHS (pgstore).
+"""outboxkit — transactional outbox: `Bus` пишет событие в таблицу в транзакции домена,
+`Worker` тиком-транзакцией (list → publish → mark) публикует его в JetStream.
 
-Core-порт Repository отделён от pgstore-реализации. Эмитит
-outbox_events_{inserted,processed,dead}_total, outbox_batch_{size,duration_seconds},
-outbox_publish_duration_seconds; outbox_lag_seconds/outbox_pending_count — opt-in
-через BacklogReporter + register_backlog_gauges. Боевой Postgres-store — в
-подпакете outboxkit.pgstore.
+Гарантия — at-least-once: id строки уходит как `Nats-Msg-Id`, и переотправка на ретрае
+дедуплицируется стримом. Эмитит `outbox_events_{inserted,processed,dead}_total`,
+`outbox_revived_total`, `outbox_batch_{size,duration_seconds}`,
+`outbox_publish_duration_seconds`, а через `BacklogReporter` — `outbox_lag_seconds`,
+`outbox_pending_count` и `outbox_backlog_errors_total`. Боевой store — `outboxkit.pgstore`.
 """
 
-from .bus import Bus, Publisher, publish_json
-from .config import Config, PublishMode
-from .instance import Outbox
+from .bus import Bus, Publisher, encode_payload
+from .config import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_INSTANCE,
+    DEFAULT_TICK_TIMEOUT,
+    Config,
+    PublishMode,
+    new_config,
+)
+from .errors import BusyError, ConfigError, NotSupportedError, NoTxError, OutboxError
+from .instance import Outbox, new_outbox
 from .metrics import (
+    BacklogRegistration,
     BacklogReporter,
     OutboxInstruments,
     SubjectBacklog,
     register_backlog_gauges,
 )
-from .module import OutboxProvider, new_config
-from .outbox import Failure, Message, Repository, Store
-from .transport import (
-    OutMsg,
-    StreamTransport,
-    Transport,
-    new_stream_transport,
-    new_stream_transport_for,
+from .module import OutboxInstanceProvider, OutboxProvider
+from .outbox import (
+    DeadReviver,
+    Failure,
+    Maintainer,
+    Message,
+    MessageRef,
+    Repository,
+    RepositoryFactory,
+    ReviveFilter,
 )
-from .worker import Worker
+from .transport import OutMsg, StreamTransport, Transport, new_stream_transport
+from .worker import COMMIT_GRACE, MAX_LAST_ERROR, TickResult, Worker
 
 __all__ = [
+    "COMMIT_GRACE",
+    "DEFAULT_BATCH_SIZE",
+    "DEFAULT_INSTANCE",
+    "DEFAULT_TICK_TIMEOUT",
+    "MAX_LAST_ERROR",
+    "BacklogRegistration",
     "BacklogReporter",
     "Bus",
+    "BusyError",
     "Config",
+    "ConfigError",
+    "DeadReviver",
     "Failure",
+    "Maintainer",
     "Message",
+    "MessageRef",
+    "NoTxError",
+    "NotSupportedError",
     "OutMsg",
     "Outbox",
+    "OutboxError",
+    "OutboxInstanceProvider",
     "OutboxInstruments",
     "OutboxProvider",
     "PublishMode",
     "Publisher",
     "Repository",
-    "Store",
+    "RepositoryFactory",
+    "ReviveFilter",
     "StreamTransport",
     "SubjectBacklog",
+    "TickResult",
     "Transport",
     "Worker",
+    "encode_payload",
     "new_config",
+    "new_outbox",
     "new_stream_transport",
-    "new_stream_transport_for",
-    "publish_json",
     "register_backlog_gauges",
 ]

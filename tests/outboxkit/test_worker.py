@@ -1,238 +1,262 @@
+"""Тик воркера на фейках: транзакция, режимы публикации, backoff, poison и метрики."""
+
 from __future__ import annotations
 
 import asyncio
-import itertools
-from typing import Any
+from collections.abc import Callable
 
 import pytest
 
 from pylibinfra.outboxkit import (
-    Bus,
+    BusyError,
     Config,
-    Failure,
-    Message,
-    OutMsg,
+    OutboxError,
     PublishMode,
     Worker,
 )
+from pylibinfra.outboxkit import worker as worker_module
+from pylibinfra.outboxkit.worker import MAX_LAST_ERROR, trunc_error
+from pylibinfra.testkit import pgtest
+from pylibinfra.testkit.logtest import Capture
+
+from .fakes import BlockingTransport, FakeRepo, FakeTransport, message
+
+_INSTANCE = "outbox"
 
 
-class FakeRepo:
-    """In-memory outboxkit.Repository: insert копит, list_unpublished отдаёт
-    непомеченные и не-dead, mark_published/record_failures применяют батч."""
-
-    def __init__(self, mark_err: Exception | None = None) -> None:
-        self._seq = itertools.count(1)
-        self.rows: dict[int, Message] = {}
-        self.published: set[int] = set()
-        self.dead: set[int] = set()
-        self.failures: list[Failure] = []
-        self.mark_err = mark_err
-
-    def preload(self, *msgs: Message) -> None:
-        for m in msgs:
-            self.rows[m.id] = m
-
-    async def insert(self, subject: str, payload: Any) -> None:
-        mid = next(self._seq)
-        self.rows[mid] = Message(id=mid, subject=subject, payload=payload)
-
-    async def list_unpublished(self, limit: int) -> list[Message]:
-        out = [
-            m for mid, m in self.rows.items() if mid not in self.published and mid not in self.dead
-        ]
-        return out[:limit]
-
-    async def mark_published(self, ids: list[int]) -> None:
-        if self.mark_err is not None:
-            raise self.mark_err
-        self.published.update(ids)
-
-    async def record_failures(self, failures: list[Failure]) -> None:
-        self.failures.extend(failures)
-        self.dead.update(f.id for f in failures if f.dead)
+def _cfg(**overrides: object) -> Config:
+    return Config.model_validate({"tick_timeout": 5.0, "retry_backoff": 0.0, **overrides})
 
 
-class FakeTransport:
-    def __init__(
-        self, fail_on: dict[str, Exception] | None = None, batch_err: Exception | None = None
-    ) -> None:
-        self.published: list[str] = []
-        self._fail = fail_on or {}
-        self._batch_err = batch_err
-
-    async def publish(self, msg: OutMsg) -> None:
-        exc = self._fail.get(msg.subject)
-        if exc is not None:
-            raise exc
-        self.published.append(msg.subject)
-
-    async def publish_batch(self, msgs: list[OutMsg]) -> list[Exception | None]:
-        if self._batch_err is not None:
-            raise self._batch_err
-        results: list[Exception | None] = []
-        for m in msgs:
-            exc = self._fail.get(m.subject)
-            if exc is not None:
-                results.append(exc)
-                continue
-            self.published.append(m.subject)
-            results.append(None)
-        return results
+def _worker(repo: FakeRepo, transport: object, cfg: Config | None = None) -> Worker:
+    return Worker(_INSTANCE, repo, transport, pgtest.Identity(), cfg or _cfg(), Capture())  # type: ignore[arg-type]
 
 
-def _worker(repo: FakeRepo, tr: FakeTransport, **over: Any) -> Worker:
-    cfg = Config.model_construct(
-        batch_size=over.get("batch_size", 100),
-        interval=over.get("interval", 0.0),
-        publish_mode=over.get("mode", PublishMode.BATCH),
-        max_attempts=over.get("max_attempts", 0),
+async def test_tick_runs_in_single_transaction_and_marks_published(
+    read_metric: Callable[..., float],
+) -> None:
+    repo = FakeRepo([message(1), message(2)])
+    transport = FakeTransport()
+    tx = pgtest.Recorder()
+    worker = Worker(_INSTANCE, repo, transport, tx, _cfg(batch_size=10), Capture())  # type: ignore[arg-type]
+
+    await worker.run()
+
+    assert tx.calls() == 1
+    assert repo.limits == [10]
+    assert repo.modes == [PublishMode.BATCH]
+    assert [ref.id for ref in repo.marked] == [1, 2]
+    assert [m.id for m in transport.published] == [1, 2]
+    assert read_metric("outbox_events_processed_total", {"status": "published"}) == 2
+    assert read_metric("outbox_batch_size", {"instance": _INSTANCE}) == 1
+    assert read_metric("outbox_batch_duration_seconds") == 1
+    assert read_metric("outbox_publish_duration_seconds") == 1
+
+
+async def test_empty_tick_does_not_touch_transport(read_metric: Callable[..., float]) -> None:
+    repo = FakeRepo()
+    transport = FakeTransport()
+
+    await _worker(repo, transport).run()
+
+    assert transport.batches == []
+    assert repo.marked == []
+    assert read_metric("outbox_batch_size") == 1
+
+
+async def test_batch_marks_only_confirmed_rows(read_metric: Callable[..., float]) -> None:
+    repo = FakeRepo([message(1), message(2), message(3)])
+    transport = FakeTransport(fail_ids=[2])
+    worker = _worker(repo, transport, _cfg(max_attempts=3, retry_backoff=1.0))
+
+    with pytest.raises(OutboxError, match=r"publish order\.created \(id=2\)"):
+        await worker.run()
+
+    assert [ref.id for ref in repo.marked] == [1, 3]
+    assert [f.ref.id for f in repo.failures] == [2]
+    assert repo.failures[0].dead is False
+    assert repo.failures[0].retry_after == 1.0
+    assert "publish 2 failed" in repo.failures[0].err
+    assert read_metric("outbox_events_processed_total", {"status": "publish_error"}) == 1
+    assert read_metric("outbox_events_processed_total", {"status": "published"}) == 2
+
+
+async def test_ordered_stops_at_first_error(read_metric: Callable[..., float]) -> None:
+    repo = FakeRepo([message(1), message(2), message(3)])
+    transport = FakeTransport(fail_ids=[2])
+    worker = _worker(repo, transport, _cfg(publish_mode="ordered"))
+
+    with pytest.raises(OutboxError, match=r"publish order\.created \(id=2\)"):
+        await worker.run()
+
+    assert repo.modes == [PublishMode.ORDERED]
+    # Метится только непрерывный префикс подтверждённых, хвост не публикуется.
+    assert [ref.id for ref in repo.marked] == [1]
+    assert [m.id for m in transport.published] == [1]
+    assert [f.ref.id for f in repo.failures] == [2]
+
+
+async def test_busy_queue_head_skips_tick_silently() -> None:
+    repo = FakeRepo([message(1)], list_error=BusyError())
+    transport = FakeTransport()
+
+    await _worker(repo, transport, _cfg(publish_mode="ordered")).run()
+
+    assert transport.batches == []
+    assert repo.marked == []
+
+
+async def test_max_attempts_marks_row_dead(read_metric: Callable[..., float]) -> None:
+    repo = FakeRepo([message(1, attempts=2)])
+    transport = FakeTransport(fail_ids=[1])
+    worker = _worker(
+        repo, transport, _cfg(max_attempts=3, retry_backoff=1.0, retry_max_backoff=2.0)
     )
-    return Worker(repo, tr, cfg)  # type: ignore[arg-type]
+
+    with pytest.raises(OutboxError):
+        await worker.run()
+
+    assert repo.failures[0].dead is True
+    # 1s × 2^2 = 4s, но потолок 2s.
+    assert repo.failures[0].retry_after == 2.0
+    assert read_metric("outbox_events_dead_total", {"subject": "order.created"}) == 1
 
 
-def _dead_ids(failures: list[Failure]) -> list[int]:
-    return [f.id for f in failures if f.dead]
+async def test_unlimited_attempts_never_mark_dead() -> None:
+    repo = FakeRepo([message(1, attempts=99)])
+    transport = FakeTransport(fail_ids=[1])
+
+    with pytest.raises(OutboxError):
+        await _worker(repo, transport, _cfg(max_attempts=0)).run()
+
+    assert repo.failures[0].dead is False
 
 
-async def test_worker_publishes_and_marks() -> None:
-    repo = FakeRepo()
-    repo.preload(Message(1, "a", {}), Message(2, "b", {}))
-    tr = FakeTransport()
+async def test_retry_after_grows_exponentially() -> None:
+    worker = _worker(FakeRepo(), FakeTransport(), _cfg(retry_backoff=1.0, retry_max_backoff=300.0))
 
-    await _worker(repo, tr).run()
+    assert worker.retry_after(0) == 1.0
+    assert worker.retry_after(1) == 2.0
+    assert worker.retry_after(4) == 16.0
+    assert worker.retry_after(100) == 300.0
 
-    assert len(tr.published) == 2
-    assert repo.published == {1, 2}
+    uncapped = _worker(FakeRepo(), FakeTransport(), _cfg(retry_backoff=2.0, retry_max_backoff=0))
+    assert uncapped.retry_after(2) == 8.0
 
-
-async def test_batch_marks_only_acked_on_partial_failure() -> None:
-    repo = FakeRepo()
-    repo.preload(Message(1, "a", {}), Message(2, "boom", {}), Message(3, "c", {}))
-    tr = FakeTransport(fail_on={"boom": RuntimeError("nak")})
-
-    with pytest.raises(RuntimeError):
-        await _worker(repo, tr).run()
-
-    # id=2 (boom) не подтверждён → не помечен; 1 и 3 помечены.
-    assert repo.published == {1, 3}
-    assert [f.id for f in repo.failures] == [2]
+    disabled = _worker(FakeRepo(), FakeTransport(), _cfg(retry_backoff=0.0))
+    assert disabled.retry_after(3) == 0.0
 
 
-async def test_ordered_stops_at_first_failure() -> None:
-    repo = FakeRepo()
-    repo.preload(Message(1, "a", {}), Message(2, "boom", {}), Message(3, "c", {}))
-    tr = FakeTransport(fail_on={"boom": RuntimeError("nak")})
+async def test_store_errors_surface_wrapped(read_metric: Callable[..., float]) -> None:
+    list_repo = FakeRepo([message(1)], list_error=RuntimeError("connection reset"))
+    with pytest.raises(OutboxError, match="worker: list"):
+        await _worker(list_repo, FakeTransport()).run()
 
-    with pytest.raises(RuntimeError):
-        await _worker(repo, tr, mode=PublishMode.ORDERED).run()
+    mark_repo = FakeRepo([message(1)], mark_error=RuntimeError("deadlock"))
+    with pytest.raises(OutboxError, match="worker: mark published"):
+        await _worker(mark_repo, FakeTransport()).run()
+    assert read_metric("outbox_events_processed_total", {"status": "mark_error"}) == 1
+    # Счётчик published эмитится только после коммита — тут его нет.
+    assert read_metric("outbox_events_processed_total", {"status": "published"}) == 0
 
-    # Стоп на id=2: помечен только префикс {1}; id=3 не публиковался.
-    assert repo.published == {1}
-    assert tr.published == ["a"]
-
-
-async def test_mark_error_surfaces() -> None:
-    repo = FakeRepo(mark_err=RuntimeError("db down"))
-    repo.preload(Message(1, "a", {}))
-    tr = FakeTransport()
-
-    with pytest.raises(RuntimeError, match="mark published"):
-        await _worker(repo, tr).run()
-
-    assert repo.published == set()
+    record_repo = FakeRepo([message(1)], record_error=RuntimeError("deadlock"))
+    with pytest.raises(OutboxError, match="worker: record failures"):
+        await _worker(record_repo, FakeTransport(fail_ids=[1])).run()
 
 
-async def test_poison_goes_dead_after_max_attempts() -> None:
-    repo = FakeRepo()
-    repo.preload(
-        Message(1, "boom", {}, attempts=1),  # след. попытка — 2-я
-        Message(2, "young", {}, attempts=0),
-    )
-    tr = FakeTransport(fail_on={"boom": RuntimeError("nak"), "young": RuntimeError("nak")})
+async def test_transport_batch_failure_is_wrapped() -> None:
+    repo = FakeRepo([message(1)])
+    transport = FakeTransport(batch_error=RuntimeError("bus down"))
 
-    with pytest.raises(RuntimeError):
-        await _worker(repo, tr, max_attempts=2).run()
+    with pytest.raises(OutboxError, match="worker: publish batch"):
+        await _worker(repo, transport).run()
 
-    assert len(repo.failures) == 2
-    # id=1 достиг 2 попыток → dead; id=2 (1-я попытка) — нет.
-    assert _dead_ids(repo.failures) == [1]
+    assert repo.marked == []
 
 
-async def test_unlimited_attempts_never_dead() -> None:
-    repo = FakeRepo()
-    repo.preload(Message(1, "boom", {}, attempts=99))
-    tr = FakeTransport(fail_on={"boom": RuntimeError("nak")})
+async def test_transport_result_count_mismatch_is_reported() -> None:
+    repo = FakeRepo([message(1)])
+    transport = FakeTransport(extra_results=1)
 
-    with pytest.raises(RuntimeError):
-        await _worker(repo, tr, max_attempts=0).run()
-
-    assert _dead_ids(repo.failures) == []
+    with pytest.raises(OutboxError, match="transport returned 2 results for 1 messages"):
+        await _worker(repo, transport).run()
 
 
-async def test_batch_error_marks_nothing() -> None:
-    repo = FakeRepo()
-    repo.preload(Message(1, "a", {}))
-    tr = FakeTransport(batch_err=RuntimeError("jetstream disabled"))
+async def test_tick_deadline_aborts_publish() -> None:
+    repo = FakeRepo([message(1)])
+    transport = BlockingTransport()
+    worker = _worker(repo, transport, _cfg(tick_timeout=0.2))
 
-    with pytest.raises(RuntimeError, match="publish batch"):
-        await _worker(repo, tr).run()
+    with pytest.raises(OutboxError, match="publish batch"):
+        await worker.run()
 
-    assert repo.published == set()
-
-
-async def test_empty_batch_is_noop() -> None:
-    repo = FakeRepo()
-    tr = FakeTransport()
-    await _worker(repo, tr).run()
-    assert tr.published == []
+    assert repo.marked == []
+    transport.release.set()
 
 
-async def test_run_loop_cancellation_stops_task() -> None:
-    repo = FakeRepo()
-    repo.preload(Message(1, "evt", {}))
-    tr = FakeTransport()
-    worker = _worker(repo, tr, interval=0.01)
+async def test_cancellation_does_not_roll_back_confirmed_publications() -> None:
+    repo = FakeRepo([message(1), message(2)])
+    transport = BlockingTransport()
+    worker = _worker(repo, transport, _cfg(tick_timeout=5.0))
 
-    task = asyncio.create_task(worker.run_loop())
-    await asyncio.sleep(0.05)
-    assert 1 in repo.published
-
+    task = asyncio.create_task(worker.run())
+    await asyncio.wait_for(transport.entered.wait(), 5)
     task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-    assert task.cancelled()
+    # Публикация завершается уже после отмены: фаза mark/commit её не теряет.
+    transport.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert [ref.id for ref in repo.marked] == [1, 2]
 
 
-async def test_run_loop_survives_tick_error() -> None:
-    repo = FakeRepo()
-    repo.preload(Message(1, "boom", {}))
-    tr = FakeTransport(fail_on={"boom": RuntimeError("nak")})
-    worker = _worker(repo, tr, interval=0.01)
+async def test_ordered_stops_publishing_on_shutdown() -> None:
+    repo = FakeRepo([message(1), message(2)])
+    transport = BlockingTransport()
+    worker = _worker(repo, transport, _cfg(publish_mode="ordered", tick_timeout=5.0))
 
-    task = asyncio.create_task(worker.run_loop())
-    await asyncio.sleep(0.05)
-    assert not task.done()
-
+    task = asyncio.create_task(worker.run())
+    await asyncio.wait_for(transport.entered.wait(), 5)
     task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
+    transport.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Первое сообщение подтверждено и помечено, второе даже не публиковалось.
+    assert [m.id for m in transport.published] == [1]
+    assert [ref.id for ref in repo.marked] == [1]
 
 
-async def test_bus_publish_writes_to_repo() -> None:
-    repo = FakeRepo()
-    bus = Bus(repo)
-    await bus.publish("user.created", {"id": 7})
+async def test_cancelled_run_cancels_a_tick_that_overruns_the_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(worker_module, "COMMIT_GRACE", 0.1)
 
-    assert len(repo.rows) == 1
-    msg = next(iter(repo.rows.values()))
-    assert msg.subject == "user.created"
-    assert msg.payload == {"id": 7}
+    class _HangingMark(FakeRepo):
+        def __init__(self) -> None:
+            super().__init__([message(1)])
+            self.entered = asyncio.Event()
+
+        async def mark_published(self, refs: object) -> None:
+            self.entered.set()
+            await asyncio.Event().wait()
+
+    repo = _HangingMark()
+    worker = _worker(repo, FakeTransport(), _cfg(tick_timeout=0.1))
+
+    task = asyncio.create_task(worker.run())
+    await asyncio.wait_for(repo.entered.wait(), 5)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Запас на commit исчерпан: таска тика снята, а не оставлена жить до конца процесса.
+    assert [t for t in asyncio.all_tasks() if t.get_name().startswith("outboxkit.tick.")] == []
 
 
-async def test_bus_publish_propagates_repo_error() -> None:
-    class FailingRepo(FakeRepo):
-        async def insert(self, subject: str, payload: Any) -> None:
-            raise RuntimeError("db down")
-
-    bus = Bus(FailingRepo())
-    with pytest.raises(RuntimeError, match="db down"):
-        await bus.publish("evt", {})
+def test_trunc_error_caps_last_error() -> None:
+    assert trunc_error(RuntimeError("x" * 5000)) == "x" * MAX_LAST_ERROR
+    assert trunc_error(RuntimeError("short")) == "short"

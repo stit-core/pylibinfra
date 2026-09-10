@@ -1,117 +1,131 @@
+"""dishka-проводка outbox'а: single-instance и инстансы на своих таблицах."""
+
 from __future__ import annotations
 
-import asyncio
-import itertools
 from typing import Any
 
 from dishka import Provider, Scope, make_async_container, provide
 
-from pylibinfra.logkit import Logger, nop
-from pylibinfra.natskit import StreamBus, StreamMsg
+from pylibinfra import logkit
+from pylibinfra.natskit import StreamBus
 from pylibinfra.outboxkit import (
     Bus,
     Config,
-    Failure,
-    Message,
+    Outbox,
+    OutboxInstanceProvider,
     OutboxProvider,
     Publisher,
     Repository,
+    RepositoryFactory,
+    Transport,
     Worker,
 )
+from pylibinfra.pgkit import Transactor
+from pylibinfra.testkit import natstest, pgtest
+from pylibinfra.testkit.logtest import Capture
+
+from .fakes import FakeRepo, message
 
 
-class FakeRepo:
-    def __init__(self) -> None:
-        self._seq = itertools.count(1)
-        self.rows: dict[int, Message] = {}
-        self.published: set[int] = set()
+class _AppProvider(Provider):
+    scope = Scope.APP
 
-    async def insert(self, subject: str, payload: Any) -> None:
-        mid = next(self._seq)
-        self.rows[mid] = Message(id=mid, subject=subject, payload=payload)
+    def __init__(self, repo: FakeRepo, recorder: natstest.Recorder) -> None:
+        super().__init__()
+        self._repo = repo
+        self._recorder = recorder
 
-    async def list_unpublished(self, limit: int) -> list[Message]:
-        return [m for mid, m in self.rows.items() if mid not in self.published][:limit]
+    @provide
+    def config(self) -> Config:
+        return Config(batch_size=10)
 
-    async def mark_published(self, ids: list[int]) -> None:
-        self.published.update(ids)
+    @provide
+    def logger(self) -> logkit.Logger:
+        return Capture()
 
-    async def record_failures(self, failures: list[Failure]) -> None:  # pragma: no cover
-        pass
+    @provide
+    def transactor(self) -> Transactor:
+        return pgtest.Identity()
 
+    @provide
+    def stream_bus(self) -> StreamBus:
+        return self._recorder
 
-class FakeStreamBus:
-    def __init__(self) -> None:
-        self.sent: list[StreamMsg] = []
+    @provide
+    def repository(self) -> Repository:
+        return self._repo
 
-    async def publish_stream(
-        self, subject: str, payload: bytes, msg_id: str | None = None
-    ) -> None:  # pragma: no cover
-        self.sent.append(StreamMsg(subject=subject, payload=payload, msg_id=msg_id or ""))
+    @provide
+    def factory(self) -> RepositoryFactory:
+        async def build(table: str) -> Repository:
+            self._repo.table = table  # type: ignore[attr-defined]
+            return self._repo
 
-    async def publish_stream_batch(self, msgs: list[StreamMsg]) -> list[Exception | None]:
-        self.sent.extend(msgs)
-        return [None] * len(msgs)
-
-    async def subscribe_stream(self, stream: str, subject: str, durable: str, handler: Any) -> None:
-        raise NotImplementedError
-
-    async def drain(self) -> None:  # pragma: no cover
-        return
+        return build
 
 
-def _deps(repo: FakeRepo, sb: FakeStreamBus) -> Provider:
-    class _Deps(Provider):
-        scope = Scope.APP
+async def test_single_instance_graph_publishes_and_drains() -> None:
+    repo = FakeRepo([message(1)])
+    recorder = natstest.new()
+    container = make_async_container(OutboxProvider(), _AppProvider(repo, recorder))
+    try:
+        outbox = await container.get(Outbox)
+        publisher = await container.get(Publisher)
+        worker = await container.get(Worker)
+        transport = await container.get(Transport)
+        bus = await container.get(Bus)
 
-        @provide
-        def repo(self) -> Repository:
-            return repo
+        assert outbox.name == "outbox"
+        assert bus is publisher
+        assert isinstance(transport, object)
 
-        @provide
-        def stream_bus(self) -> StreamBus:
-            return sb
+        await publisher.publish("order.created", {"id": 7})
+        await worker.run()
 
-        @provide
-        def cfg(self) -> Config:
-            return Config.model_construct(batch_size=10, interval=0.01)
-
-        @provide
-        def log(self) -> Logger:
-            return nop()
-
-    return _Deps()
+        # Дефолтный инстанс публикует с голым id строки.
+        assert [m.msg_id for m in recorder.published()] == ["1", "100"]
+        assert {m.metric_subject for m in recorder.published()} == {"outbox"}
+    finally:
+        await container.close()
 
 
-async def test_provider_runs_and_stops_worker() -> None:
+async def test_named_instance_lives_in_its_own_component() -> None:
+    repo = FakeRepo([message(1)])
+    recorder = natstest.new()
+    container = make_async_container(
+        OutboxInstanceProvider("orders", "outbox_orders"),
+        _AppProvider(repo, recorder),
+    )
+    try:
+        outbox = await container.get(Outbox, component="orders")
+        worker = await container.get(Worker, component="orders")
+
+        await worker.run()
+
+        assert outbox.name == "orders"
+        assert getattr(repo, "table", "") == "outbox_orders"
+        # Msg-Id намспейсится именем инстанса: таблицы делят один стрим.
+        assert [m.msg_id for m in recorder.published()] == ["orders:1"]
+        assert [job.name for job in outbox.jobs()] == ["outboxkit.publisher.orders"]
+    finally:
+        await container.close()
+
+
+async def test_named_instance_can_override_config() -> None:
     repo = FakeRepo()
-    sb = FakeStreamBus()
-    await repo.insert("evt", {"i": 1})
+    recorder = natstest.new()
+    ordered = Config(publish_mode="ordered", interval=5.0)  # type: ignore[arg-type]
+    container = make_async_container(
+        OutboxInstanceProvider("leads", "outbox_leads", cfg=ordered),
+        _AppProvider(repo, recorder),
+    )
+    try:
+        outbox = await container.get(Outbox, component="leads")
 
-    container = make_async_container(OutboxProvider(), _deps(repo, sb))
-
-    worker = await container.get(Worker)
-    assert worker is not None
-    await asyncio.sleep(0.05)
-    assert repo.published == {1}
-
-    # close() триггерит async-generator-выход → задача воркера отменяется.
-    await container.close()
-    snapshot = len(sb.sent)
-    await asyncio.sleep(0.03)
-    assert len(sb.sent) == snapshot
+        assert outbox.job().interval == 5.0
+    finally:
+        await container.close()
 
 
-async def test_provider_wires_bus_and_publisher() -> None:
-    repo = FakeRepo()
-    sb = FakeStreamBus()
-    container = make_async_container(OutboxProvider(), _deps(repo, sb))
-
-    bus = await container.get(Bus)
-    publisher = await container.get(Publisher)
-    assert publisher is bus
-
-    await bus.publish("user.created", {"id": 1})
-    assert len(repo.rows) == 1
-
-    await container.close()
+def _unused(*_: Any) -> None:  # pragma: no cover - помощник для читаемости импортов
+    return None

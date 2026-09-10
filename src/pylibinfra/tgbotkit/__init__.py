@@ -1,32 +1,22 @@
-"""tgbotkit — bootstrap aiogram-бота как инфраструктурный примитив: Bot/Dispatcher/
-RedisStorage, стандартная outer-цепочка (request-id/dedup/throttle/RED+span/
-recovery), error-recovery, dishka-Update-scope, aiogram_dialog (setup последним),
-polling|webhook runner с graceful-shutdown, и generic-механика подсистем (i18n/
-notifications/payments/webapp). Знает про aiogram-как-transport (как httpkit про
-FastAPI), НЕ про конкретный бот: тексты/команды/StatesGroup/флоу — в шаблоне через
-точки расширения (RouterBundle/CommandBundle/NotifierBundle/ErrorUX/i18n).
+"""tgbotkit — bootstrap aiogram-бота: транспорт, цепочка апдейта, runner и подсистемы.
 
-Эмитит: tg_updates_total{type,result}, tg_update_duration_seconds,
-tg_update_panics_total, tg_updates_deduped_total, tg_payments_total{stage,result};
-span tg.update {type}.
-
-Требует extra: `uv add "pylibinfra[tgbotkit]"` (aiogram, aiogram-dialog, fluent.runtime).
+Эмитит `tg_updates_total{type,result}`, `tg_update_duration_seconds{type,result}`,
+`tg_update_panics_total{type}`, `tg_updates_deduped_total{type}`,
+`tg_updates_throttled_total{type}`, `tg_redis_errors_total{op}`,
+`tg_payments_total{stage,result}` и спан `tg.update`;
+пробы — `tgbotkit` и `tgbotkit/redis`. Требует extra `[tgbotkit]`.
 """
 
-try:
-    import aiogram as _aiogram  # noqa: F401
-except ImportError as _exc:  # pragma: no cover
-    raise ImportError(
-        "tgbotkit requires the [tgbotkit] extra — install `pylibinfra[tgbotkit]` "
-        "(aiogram, aiogram-dialog, fluent.runtime)."
-    ) from _exc
-
-from .config import Config, I18nConfig
-from .errorux import ErrorUX, default_error_ux, register_error_handlers
+from .config import Config, I18nConfig, Mode, ParseMode, new_config
+from .errors import ConfigError, InitDataError, PaymentError, RunnerError, TgbotkitError
+from .errorux import DefaultErrorUX, ErrorUX, default_error_ux, register_error_handlers
 from .extension import CommandBundle, CommandSpec, Notifier, NotifierBundle, RouterBundle
 from .i18n import (
+    I18N_FORMAT_KEY,
+    LOCALE_KEY,
     ChainResolver,
     FluentTranslator,
+    FormatFunc,
     FromCachePref,
     FromUserLanguage,
     I18NFormat,
@@ -41,23 +31,29 @@ from .markdown import (
     escape_markdown_v2_code,
     escape_markdown_v2_link,
 )
-from .metrics import TgInstruments, new_instruments
+from .metrics import Instruments, new_instruments
 from .module import (
+    PROBE_NAME,
+    REDIS_PROBE_NAME,
     BotProvider,
     OptionalLocaleResolver,
     OptionalStreamBus,
     OptionalTranslator,
-    new_config,
     probe,
+    redis_probe,
 )
 from .notifications import (
+    DeliverHandler,
     Delivery,
     DeliveryDedup,
     NotificationRouter,
     NotificationRunner,
+    Route,
+    is_markup_error,
 )
 from .payments import (
     STARS_SUBSCRIPTION_PERIOD,
+    XTR,
     ChargeGuard,
     Money,
     PreCheckoutDecision,
@@ -67,11 +63,18 @@ from .payments import (
     build_subscription_link,
     refund_charge,
 )
-from .runner import BotRunner, PollingRunner, WebhookRunner, build_runner
-from .webapp import InitDataError, validate_init_data
+from .runner import SECRET_HEADER, BotRunner, PollingRunner, WebhookRunner, build_runner
+from .storage import build_isolation, build_storage
+from .webapp import validate_init_data
 
 __all__ = [
+    "I18N_FORMAT_KEY",
+    "LOCALE_KEY",
+    "PROBE_NAME",
+    "REDIS_PROBE_NAME",
+    "SECRET_HEADER",
     "STARS_SUBSCRIPTION_PERIOD",
+    "XTR",
     "BotProvider",
     "BotRunner",
     "ChainResolver",
@@ -79,17 +82,23 @@ __all__ = [
     "CommandBundle",
     "CommandSpec",
     "Config",
+    "ConfigError",
+    "DefaultErrorUX",
+    "DeliverHandler",
     "Delivery",
     "DeliveryDedup",
     "ErrorUX",
     "FluentTranslator",
+    "FormatFunc",
     "FromCachePref",
     "FromUserLanguage",
     "I18NFormat",
     "I18nConfig",
     "InitDataError",
+    "Instruments",
     "LocalePrefStore",
     "LocaleResolver",
+    "Mode",
     "Money",
     "NotificationRouter",
     "NotificationRunner",
@@ -98,16 +107,22 @@ __all__ = [
     "OptionalLocaleResolver",
     "OptionalStreamBus",
     "OptionalTranslator",
+    "ParseMode",
+    "PaymentError",
     "PollingRunner",
     "PreCheckoutDecision",
     "RefundGuard",
+    "Route",
     "RouterBundle",
-    "TgInstruments",
+    "RunnerError",
+    "TgbotkitError",
     "Translator",
     "WebhookRunner",
     "answer_pre_checkout",
     "build_invoice",
+    "build_isolation",
     "build_runner",
+    "build_storage",
     "build_subscription_link",
     "build_translator",
     "default_error_ux",
@@ -115,9 +130,11 @@ __all__ = [
     "escape_markdown_v2_code",
     "escape_markdown_v2_link",
     "install_i18n",
+    "is_markup_error",
     "new_config",
     "new_instruments",
     "probe",
+    "redis_probe",
     "refund_charge",
     "register_error_handlers",
     "validate_init_data",

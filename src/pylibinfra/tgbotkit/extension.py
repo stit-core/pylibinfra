@@ -1,32 +1,28 @@
-"""Точки расширения kit'а — типизированные bundle'ы, которые шаблон наполняет
-своим Provider'ом (last-wins), а kit читает как зависимость. Идиома dishka
-(как timerkit.list[PeriodicJob] / httpkit.ProbeBundle): не декораторы-с-глобальным-
-реестром (теряют DI/тестируемость), не наследование (анти-OCP).
-"""
+"""Точки расширения кита: кортежи-ключи DI, которые наполняет App-Provider консьюмера."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 from aiogram import Router
 
-if TYPE_CHECKING:
-    from pylibinfra.natskit import StreamBus
+if TYPE_CHECKING:  # pragma: no cover
+    from pylibinfra.natskit import StreamBus, Subscription
 
     from .notifications.delivery import Delivery
 
-# Dialog является Router (aiogram_dialog) — фиче-диалоги едут сюда же.
 RouterBundle = tuple[Router, ...]
+"""DI-ключ роутеров и диалогов сервиса; `Dialog` тоже `Router`, поэтому едет сюда же."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CommandSpec:
-    """Не-диалоговый вход уровня диспетчера: команда, pre_checkout, successful_payment.
+    """Вход уровня диспетчера: команда, `pre_checkout_query`, `successful_payment`.
 
-    observer — ключ в dp.observers ("message" | "pre_checkout_query" | ...);
-    kit регистрирует через dp.observers[observer].register(handler, *filters).
+    `observer` — ключ в `dp.observers`; кит регистрирует обработчик как
+    `dp.observers[observer].register(handler, *filters)`.
     """
 
     observer: str
@@ -35,17 +31,15 @@ class CommandSpec:
 
 
 CommandBundle = tuple[CommandSpec, ...]
+"""DI-ключ не-диалоговых входов диспетчера."""
 
 
 class Notifier(Protocol):
-    """Подписчик «событие бэкенда (NATS JetStream) → доставка в Telegram».
+    """Порт подписки «событие бэкенда → доставка в Telegram»."""
 
-    kit вызывает subscribe() на старте (long-running) и даёт shutdown через
-    drain соединения. delivery — безопасная обёртка над BgManager (см.
-    notifications.delivery): маппинг backend_user_id→chat_id остаётся в шаблоне.
-    """
-
-    async def subscribe(self, bus: StreamBus, delivery: Delivery) -> None: ...
+    async def subscribe(self, bus: StreamBus, delivery: Delivery) -> Sequence[Subscription]:
+        """Открывает свои подписки и возвращает их handle'ы — кит дренит их на остановке."""
 
 
 NotifierBundle = tuple[Notifier, ...]
+"""DI-ключ фоновых подписчиков; пустой кортеж — бот работает без NATS."""

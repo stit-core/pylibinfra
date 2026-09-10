@@ -1,55 +1,110 @@
-from dishka import Provider, Scope, provide
+"""Конфиг pgstore и dishka-проводка: `Store` как `Repository` плюс фабрика для multi-instance."""
+
+from __future__ import annotations
+
+from typing import Annotated
+
+from dishka import DEFAULT_COMPONENT, FromComponent, Provider, Scope, provide
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from pylibinfra.outboxkit.outbox import Repository
-from pylibinfra.pgkit import DB
-from pylibinfra.timerkit import PeriodicJob
+from pylibinfra._internal import configkit
+from pylibinfra._internal.configkit import KitSettings
+from pylibinfra.clockkit import Clock
+from pylibinfra.outboxkit.errors import ConfigError
+from pylibinfra.outboxkit.outbox import Repository, RepositoryFactory
+from pylibinfra.pgkit import DB, Migrated
 
-from .store import PgStore
+from .store import DEFAULT_TABLE, Store
 
-# Партиция следующего месяца создаётся заранее, чтобы insert не падал при переходе
-# календаря в ещё несозданную партицию. Retention-keeper дропает старые партиции
-# раз в сутки. Оба идемпотентны.
-_KEEPER_INTERVAL = 24 * 3600.0
-
-
-class Config(BaseSettings):
-    model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
-
-    # >0 — дропать outbox-партиции старше N месяцев; 0 — не дропать.
-    retention_months: int = Field(default=0, validation_alias="OUTBOX_RETENTION_MONTHS")
-    # true — insert вне pgkit Transactor.with_tx падает (страхует атомарность).
-    require_tx: bool = Field(default=False, validation_alias="OUTBOX_REQUIRE_TX")
+_KIT = "outboxkit"
+_Default = FromComponent(DEFAULT_COMPONENT)
 
 
-# Provider даёт PgStore как outboxkit.Repository (его потребляют outboxkit.Bus/Worker
-# из OutboxProvider). PgStore реализует и BacklogReporter — OutboxProvider включает
-# outbox_lag_seconds/outbox_pending_count, обнаружив это структурно. Config не
-# provide'ится (asymmetry) — caller регистрирует сам (дешёвый mode: new_config()).
-class OutboxPgstoreProvider(Provider):
-    scope = Scope.APP
+class Config(KitSettings):
+    """Env-контракт Postgres-store'а: retention партиций и tx-strict guard на insert."""
 
-    @provide(provides=Repository)
-    def store(self, db: DB, cfg: Config) -> PgStore:
-        return PgStore(db, require_tx=cfg.require_tx)
+    retention_months: int = Field(default=0, ge=0, validation_alias="OUTBOX_RETENTION_MONTHS")
+    require_tx: bool = Field(default=True, validation_alias="OUTBOX_REQUIRE_TX")
 
 
 def new_config() -> Config:
-    return Config()
+    """Читает `OUTBOX_RETENTION_MONTHS`/`OUTBOX_REQUIRE_TX`; невалидные значения — `ConfigError`."""
+    return configkit.build(Config, _KIT, ConfigError)
 
 
-def partition_keeper_job(store: PgStore) -> PeriodicJob:
-    return PeriodicJob(
-        name=f"outboxkit.partition-keeper.{store.table}",
-        interval=_KEEPER_INTERVAL,
-        handler=lambda: store.ensure_partitions(1),
+def new_store(db: DB, cfg: Config, table: str = DEFAULT_TABLE, clock: Clock | None = None) -> Store:
+    """Собирает `Store` на таблицу `table` по конфигу pgstore."""
+    return Store(
+        db,
+        table,
+        require_tx=cfg.require_tx,
+        retention_months=cfg.retention_months,
+        clock=clock,
     )
 
 
-def retention_keeper_job(store: PgStore, keep_months: int) -> PeriodicJob:
-    return PeriodicJob(
-        name=f"outboxkit.retention.{store.table}",
-        interval=_KEEPER_INTERVAL,
-        handler=lambda: store.drop_old_partitions(keep_months),
-    )
+def new_repository_factory(db: DB, cfg: Config, clock: Clock | None = None) -> RepositoryFactory:
+    """Фабрика store'ов на произвольные таблицы для `OutboxInstanceProvider`.
+
+    Партиции таблицы создаются при сборке инстанса: первый insert не должен упасть
+    в ещё несозданную партицию. Схему таблицы накатывает `table_migrations(table)`.
+    """
+
+    async def factory(table: str) -> Repository:
+        store = new_store(db, cfg, table, clock)
+        await store.ensure_partitions(1)
+        return store
+
+    return factory
+
+
+class OutboxPgstoreProvider(Provider):
+    """Single-instance путь: `Store` на таблице `outbox` как `outboxkit.Repository`.
+
+    Зависимость от `pgkit.Migrated` ставит создание партиций после миграций —
+    иначе на чистой БД партиции создавались бы поверх отсутствующей таблицы.
+    `Config` регистрирует консьюмер (asymmetry note): дешёвый путь — `new_config()`.
+    """
+
+    scope = Scope.APP
+
+    def __init__(self, table: str = DEFAULT_TABLE, *, component: str | None = None) -> None:
+        super().__init__(component=component)
+        self.table = table
+
+    @provide
+    async def store(
+        self,
+        db: Annotated[DB, _Default],
+        cfg: Config,
+        migrated: Annotated[Migrated, _Default],
+    ) -> Store:
+        """Store с созданными партициями текущего и следующего месяца."""
+        store = new_store(db, cfg, self.table)
+        await store.ensure_partitions(1)
+        return store
+
+    @provide
+    def repository(self, store: Store) -> Repository:
+        """Тот же store под core-портом кита."""
+        return store
+
+
+class OutboxPgstoreFactoryProvider(Provider):
+    """Multi-instance путь: `RepositoryFactory` для `OutboxInstanceProvider`.
+
+    С `OutboxPgstoreProvider` не сочетается по смыслу: тот держит таблицу `outbox`,
+    эта фабрика — таблицы инстансов.
+    """
+
+    scope = Scope.APP
+
+    @provide
+    def factory(
+        self,
+        db: Annotated[DB, _Default],
+        cfg: Config,
+        migrated: Annotated[Migrated, _Default],
+    ) -> RepositoryFactory:
+        """Фабрика store'ов; партиции таблицы создаются при сборке инстанса."""
+        return new_repository_factory(db, cfg)

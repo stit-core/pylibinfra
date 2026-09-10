@@ -1,4 +1,4 @@
-"""Runner: polling | webhook по cfg.mode, с deferred-проводкой и graceful-shutdown."""
+"""Runner бота: polling или webhook по `BOT_MODE`, с отложенной проводкой и graceful-стопом."""
 
 from __future__ import annotations
 
@@ -6,16 +6,23 @@ import redis.asyncio as redis
 from aiogram import Bot, Dispatcher
 from dishka import AsyncContainer
 
+from pylibinfra import httpkit
 from pylibinfra.logkit import Logger
-from pylibinfra.natskit import Conn, StreamBus
+from pylibinfra.natskit import StreamBus
 from pylibinfra.tgbotkit.config import Config
 from pylibinfra.tgbotkit.extension import NotifierBundle
 
 from .base import BotRunner, _BaseRunner
 from .polling import PollingRunner
-from .webhook import WebhookRunner
+from .webhook import SECRET_HEADER, WebhookRunner
 
-__all__ = ["BotRunner", "PollingRunner", "WebhookRunner", "build_runner"]
+__all__ = [
+    "SECRET_HEADER",
+    "BotRunner",
+    "PollingRunner",
+    "WebhookRunner",
+    "build_runner",
+]
 
 
 def build_runner(
@@ -25,11 +32,12 @@ def build_runner(
     dp: Dispatcher,
     container: AsyncContainer,
     client: redis.Redis,
+    server: httpkit.Server,
     log: Logger | None = None,
     notifiers: NotifierBundle = (),
     bus: StreamBus | None = None,
-    conn: Conn | None = None,
 ) -> BotRunner:
+    """Runner под `cfg.mode`; `server` обязан быть собран как `HttpProvider(autostart=False)`."""
     runner_cls: type[_BaseRunner] = WebhookRunner if cfg.mode == "webhook" else PollingRunner
     return runner_cls(
         cfg=cfg,
@@ -37,8 +45,8 @@ def build_runner(
         dp=dp,
         container=container,
         client=client,
+        server=server,
         log=log,
         notifiers=notifiers,
         bus=bus,
-        conn=conn,
     )

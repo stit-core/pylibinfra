@@ -1,8 +1,4 @@
-"""dishka_lifespan — FastAPI-lifespan, закрывающий dishka-контейнер ПОСЛЕ
-остановки сервера. Без него контейнер (а с ним telemetry-flush, redis/nats/pg
-aclose) пришлось бы закрывать снаружи, гадая про порядок относительно uvicorn —
-lifespan гарантирует «закрыть после того, как сервер отдал все ответы».
-"""
+"""FastAPI-lifespan, закрывающий dishka-контейнер после того, как сервер отдал все ответы."""
 
 from __future__ import annotations
 
@@ -16,6 +12,8 @@ Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[None]]
 
 
 def dishka_lifespan(container: AsyncContainer) -> Lifespan:
+    """Lifespan, закрывающий контейнер (telemetry-flush, redis/nats/pg) после остановки сервера."""
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         try:

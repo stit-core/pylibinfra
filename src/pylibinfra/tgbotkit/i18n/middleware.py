@@ -1,8 +1,4 @@
-"""I18nMiddleware (inner на dp.update): резолвит локаль и кладёт format-функцию в
-middleware_data[I18N_FORMAT_KEY] + data["locale"]. На dp.update (а не на
-message/callback) — чтобы покрыть и фоновые dialog-рендеры (они идут через тот же
-propagate_event("update")). install_i18n — no-op без настроенного каталога.
-"""
+"""I18nMiddleware: локаль апдейта и функция рендера в `middleware_data`."""
 
 from __future__ import annotations
 
@@ -20,19 +16,25 @@ from .translator import Translator, build_translator
 
 Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
 
+LOCALE_KEY = "locale"
+"""Ключ `middleware_data` с локалью апдейта — её читают обработчики консьюмера."""
+
 
 class I18nMiddleware(BaseMiddleware):
+    """Кладёт локаль апдейта и её `FormatFunc` в данные обработчика."""
+
     def __init__(
         self, translator: Translator, resolver: LocaleResolver, default_locale: str
     ) -> None:
-        self._tr = translator
+        self._translator = translator
         self._resolver = resolver
         self._default = default_locale
 
     async def __call__(self, handler: Handler, event: TelegramObject, data: dict[str, Any]) -> Any:
+        """Резолвит локаль апдейта и кладёт её вместе с `FormatFunc` в данные."""
         locale = await self._resolver.resolve(event, data) or self._default
-        data["locale"] = locale
-        data[I18N_FORMAT_KEY] = self._tr.for_locale(locale)
+        data[LOCALE_KEY] = locale
+        data[I18N_FORMAT_KEY] = self._translator.for_locale(locale)
         return await handler(event, data)
 
 
@@ -42,9 +44,12 @@ def install_i18n(
     translator: Translator | None = None,
     resolver: LocaleResolver | None = None,
 ) -> None:
-    translator = translator or build_translator(cfg)
-    if translator is None:
-        return  # i18n не настроен
-    dp.update.middleware(
-        I18nMiddleware(translator, resolver or FromUserLanguage(), cfg.default_locale)
-    )
+    """Ставит `I18nMiddleware` на `dp.update`; без каталога локалей — no-op.
+
+    На `dp.update`, а не на `message`/`callback_query`: через него же идут фоновые
+    рендеры диалога, которым текст нужен так же.
+    """
+    engine = translator if translator is not None else build_translator(cfg)
+    if engine is None:
+        return
+    dp.update.middleware(I18nMiddleware(engine, resolver or FromUserLanguage(), cfg.default_locale))

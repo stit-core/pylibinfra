@@ -14,16 +14,13 @@ dependencies = [
     # config (аналог envconfig + struct tags)
     "pydantic>=2.13,<3",
     "pydantic-settings>=2.14,<3",
-    # instrumentation: vendor-neutral OTel-метрики/трейсы китов (SDK/провайдер не
-    # шипится — данные no-op без него; consumer сам решает, чем их собирать)
+    # instrumentation: vendor-neutral OTel-метрики/трейсы китов; SDK и OTLP-экспортёры
+    # поднимает opt-in кит telemetry, без него сигналы no-op
     "opentelemetry-api>=1.42,<2",
     "opentelemetry-sdk>=1.42,<2",
     "opentelemetry-exporter-otlp-proto-http>=1.42,<2",
     "opentelemetry-instrumentation-system-metrics>=0.63b1",
-    "opentelemetry-instrumentation-fastapi>=0.63b1",
-    "opentelemetry-instrumentation-asgi>=0.63b1",
     "opentelemetry-instrumentation-httpx>=0.63b1",
-    "opentelemetry-instrumentation-redis>=0.63b1",
     "opentelemetry-instrumentation-asyncpg>=0.63b1",
     # web (аналог huma/v2 + chi + net/http)
     "fastapi>=0.136,<1",
@@ -38,21 +35,14 @@ dependencies = [
     "nats-py>=2.15,<3",
     # cache (аналог go-redis)
     "redis>=8,<9",
-    # http-клиент (аналог net/http + sony/gobreaker)
+    # http-клиент (аналог net/http; retry и circuit breaker — свои, на stdlib)
     "httpx>=0.28,<1",
-    "tenacity>=9.1,<10",
-    "purgatory-circuitbreaker>=0.7,<1",
     # storage (аналог minio-go; S3-generic, MinIO через endpoint_url)
     "aioboto3>=15.5,<16",
     # auth (аналог argon2 / golang-jwt / pquerna-otp)
     "argon2-cffi>=25.1,<26",
     "pyjwt>=2.13,<3",
     "pyotp>=2.9,<3",
-    # logging (аналог slog)
-    "structlog>=26.1,<27",
-    # purgatory (circuit breaker) импортирует pkg_resources на старте;
-    # setuptools ≥81 его уже не поставляет — пиним на линию, где он есть
-    "setuptools>=80,<81",
 ]
 
 [project.optional-dependencies]
@@ -115,6 +105,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pylibinfra"]
+# README/docs китов живут рядом с кодом как источник правды, но в wheel не едут
+exclude = ["**/README.md", "**/docs/**"]
 
 # ── ruff: format + lint (аналог gofumpt + golangci-lint) ──────────────────────
 [tool.ruff]
@@ -138,6 +130,9 @@ select = [
     "S",        # bandit (≈ gosec)
     "TID",      # tidy imports
     "RUF",      # ruff-specific
+    # docstring на каждом публичном модуле/пакете/классе/функции/методе
+    # (аналог revive.exported в golibinfra); стиль текста не проверяем
+    "D100", "D101", "D102", "D103", "D104", "D106", "D419",
 ]
 ignore = [
     "S101",     # assert — допустим вне тестов в защитных проверках
@@ -147,7 +142,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S", "N802", "PLR2004"]  # assert/hardcoded-secret/имена/magic в тестах — ок
+"tests/**" = ["S", "N802", "PLR2004", "D"]  # assert/secret/имена/magic/docstring в тестах — ок
 # имя таблицы/партиции инлайнится в SQL (объект нельзя передать плейсхолдером),
 # валидируется regex'ом на входе — как в golibinfra; S608 здесь ложноположителен
 "src/pylibinfra/outboxkit/pgstore/store.py" = ["S608"]
@@ -183,9 +178,9 @@ ignore_missing_imports = true
 # grpc/grpc.aio: grpcio не поставляет py.typed, а сторонние grpc-stubs типизируют
 # grpc.aio как sync (фундаментальные несовпадения) — больше вреда, чем пользы;
 # трактуем как Any (как fluent.*). grpc_health и otel-grpc-instrumentation тоже
-# untyped. Used by grpckit.{server,interceptors,health}.
+# untyped; grpc_reflection — opt-in пакет reflection. Used by grpckit.
 [[tool.mypy.overrides]]
-module = ["grpc", "grpc.*", "grpc_health.*", "opentelemetry.instrumentation.grpc.*"]
+module = ["grpc", "grpc.*", "grpc_health.*", "grpc_reflection.*", "opentelemetry.instrumentation.grpc.*"]
 ignore_missing_imports = true
 
 # ── pytest (аналог `go test`; integration ≈ снятие -short) ────────────────────

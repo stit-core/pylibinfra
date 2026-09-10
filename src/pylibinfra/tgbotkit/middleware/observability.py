@@ -1,9 +1,4 @@
-"""ObservabilityMiddleware (outer): span tg.update {type} + RED-метрики
-(tg_updates_total{type,result}, tg_update_duration_seconds). Innermost из нашей
-цепочки — видит исключение хендлера, помечает result=error и пробрасывает выше
-(recovery его погасит). Покрывает и фоновые dialog-события: они идут через тот
-же propagate_event("update").
-"""
+"""ObservabilityMiddleware: спан `tg.update` и RED-метрики каждого апдейта."""
 
 from __future__ import annotations
 
@@ -13,36 +8,62 @@ from typing import Any
 
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
-from opentelemetry import trace
+from aiogram.types.update import UpdateTypeLookupError
 from opentelemetry.trace import Status, StatusCode
 
-from pylibinfra.tgbotkit.metrics import TgInstruments
+from pylibinfra._internal import otelkit
+from pylibinfra.tgbotkit.metrics import Instruments
 
 Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
 
+SPAN_NAME = "tg.update"
+
+
+def update_type(event: TelegramObject) -> str:
+    """Тип апдейта как label метрик и атрибут спана; `unknown`, если тип не определяется.
+
+    `Update.event_type` — property, которая бросает `UpdateTypeLookupError` на апдейте
+    незнакомого этой версии aiogram типа; наблюдаемость не имеет права падать из-за
+    нового поля в Bot API.
+    """
+    try:
+        return str(getattr(event, "event_type", "unknown"))
+    except UpdateTypeLookupError:
+        return "unknown"
+
 
 class ObservabilityMiddleware(BaseMiddleware):
-    def __init__(self, instruments: TgInstruments) -> None:
+    """Считает `tg_updates_total`/`tg_update_duration_seconds` и открывает спан апдейта.
+
+    Стоит внутри цепочки кита: видит исключение обработчика, помечает спан и
+    `result=error`, после чего пробрасывает его в recovery. Фоновые события диалога
+    учитываются наравне с апдейтами — они идут через тот же `propagate_event`.
+    Отменённый апдейт (остановка процесса на середине) тоже `result=error`: он не
+    обработан, и записывать его успехом значило бы врать про доставку.
+    """
+
+    def __init__(self, instruments: Instruments) -> None:
         self._instr = instruments
+        self._tracer = otelkit.tracer("tgbotkit")
 
     async def __call__(self, handler: Handler, event: TelegramObject, data: dict[str, Any]) -> Any:
-        update_type = str(getattr(event, "event_type", "unknown"))
+        """Обрабатывает апдейт внутри спана, записывая исход в метрики в любом случае."""
+        kind = update_type(event)
         start = time.perf_counter()
         result = "ok"
-        tracer = trace.get_tracer("app")
         try:
-            with tracer.start_as_current_span("tg.update") as s:
-                s.set_attribute("tg.update_type", update_type)
+            with self._tracer.start_as_current_span(SPAN_NAME) as span:
+                span.set_attribute("tg.update_type", kind)
                 try:
                     return await handler(event, data)
                 except Exception as exc:
-                    s.record_exception(exc)
-                    s.set_status(Status(StatusCode.ERROR, str(exc)))
+                    span.record_exception(exc)
+                    span.set_status(Status(StatusCode.ERROR, str(exc)))
                     raise
-        except Exception:
+        except BaseException:
             result = "error"
             raise
         finally:
-            attrs = {"type": update_type, "result": result}
-            self._instr.updates_total.add(1, attrs)
-            self._instr.update_duration.record(time.perf_counter() - start, attrs)
+            attrs = {"type": kind, "result": result}
+            self._instr.updates.add(1, attrs)
+            self._instr.duration.record(time.perf_counter() - start, attrs)

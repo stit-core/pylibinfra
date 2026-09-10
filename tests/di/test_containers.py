@@ -9,7 +9,7 @@ from pylibinfra.clockkit import Clock, ClockProvider
 from pylibinfra.flagkit import Config as FlagConfig
 from pylibinfra.flagkit import FlagkitProvider, Store
 from pylibinfra.logkit import Config as LogConfig
-from pylibinfra.logkit import Logger, LogkitProvider, RedactConfig
+from pylibinfra.logkit import Logger, LogkitProvider, OptionalRedactConfig, RedactConfig
 
 
 class _Configs(Provider):
@@ -20,8 +20,9 @@ class _Configs(Provider):
         return LogConfig()
 
     @provide
-    def redact(self) -> RedactConfig:
-        return RedactConfig()
+    def redact(self) -> OptionalRedactConfig:
+        # override-паттерн: провайдер консьюмера идёт ПОСЛЕ LogkitProvider
+        return RedactConfig(enabled=True)
 
     @provide
     def flag(self) -> FlagConfig:

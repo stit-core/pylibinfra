@@ -1,70 +1,123 @@
+"""dishka-проводка: `HttpProvider` отдаёт `Server` и `FastAPI`, `setup` вносит контейнер в app."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 
 from dishka import Provider, Scope, provide
 from dishka.integrations.fastapi import setup_dishka
 from fastapi import FastAPI
 
-from pylibinfra.logkit import Logger, nop
+from pylibinfra import healthkit
+from pylibinfra.logkit import Logger
 
 from .auth import AuthExtractor
 from .config import Config
-from .health import Probe
 from .idempotency import IdempotencyStore
-from .server import Server
+from .server import Middlewares, SecuritySchemes, Server
 
-# Опциональные зависимости httpkit (Store/Auth/Probes) выражены типами-обёртками:
-# dishka не поддерживает optional-инъекцию по `X | None`, но позволяет
-# override'ить фабрику той же сигнатуры (последний провайдер в контейнере
-# побеждает). HttpProvider даёт пустые дефолты ниже; consumer регистрирует свой
-# провайдер ПОСЛЕ HttpProvider, чтобы подменить нужный.
+# Опциональные зависимости выражены типами-обёртками: dishka не инжектит по `X | None`, но
+# последний зарегистрированный провайдер побеждает — consumer перекрывает дефолт своим.
 OptionalStore = IdempotencyStore | None
 OptionalAuth = AuthExtractor | None
-ProbeBundle = tuple[Probe, ...]
+OptionalSecuritySchemes = SecuritySchemes | None
 
 
-# Provider не provide'ит Config (asymmetry note, см. logkit/cachekit) — caller
-# регистрирует Config сам. Дешёвый mode: new_config(). Meter httpkit не берёт из
-# DI: middleware читают глобальный metrics.get_meter("app") (no-op без telemetry).
 class HttpProvider(Provider):
+    """Provide'ит `Server` (порт занимается на старте) и его `FastAPI`.
+
+    Config не provide'ит — его регистрирует caller (`new_config` или свой App-Provider).
+    Пробы берутся из `healthkit.Probes`, middleware консьюмера — из `httpkit.Middlewares`.
+    """
+
     scope = Scope.APP
 
-    @provide
-    def default_logger(self) -> Logger:
-        return nop()
+    def __init__(self, *, autostart: bool = True) -> None:
+        """`autostart=False` собирает `Server` без занятия порта: сервит его сам консьюмер."""
+        super().__init__()
+        self.autostart = autostart
 
     @provide
     def default_store(self) -> OptionalStore:
+        """Без store идемпотентность выключена."""
         return None
 
     @provide
     def default_auth(self) -> OptionalAuth:
+        """Без extractor'а auth-гейт не подключается."""
         return None
 
     @provide
-    def default_probes(self) -> ProbeBundle:
+    def default_probes(self) -> healthkit.Probes:
+        """Пустой набор проб: `/ready` отвечает `ok` без списка."""
         return ()
+
+    @provide
+    def default_middlewares(self) -> Middlewares:
+        """Пустой хвост цепочки."""
+        return ()
+
+    @provide
+    def default_security_schemes(self) -> OptionalSecuritySchemes:
+        """Дефолтных схем безопасности OpenAPI кит не выставляет."""
+        return None
 
     @provide
     async def server(
         self,
         cfg: Config,
-        logger: Logger,
+        log: Logger,
         store: OptionalStore,
         auth: OptionalAuth,
-        probes: ProbeBundle,
+        probes: healthkit.Probes,
+        middlewares: Middlewares,
+        security_schemes: OptionalSecuritySchemes,
     ) -> AsyncIterator[Server]:
-        srv = Server(cfg, logger, store=store, auth=auth, probes=probes)
-        await srv.start()
-        yield srv
-        await srv.stop()
+        """Занимает порт синхронно (занятый — `ListenError` и провал старта) и сервит фоном."""
+        srv = Server(
+            cfg,
+            log,
+            store=store,
+            auth=auth,
+            probes=probes,
+            middlewares=middlewares,
+            security_schemes=security_schemes,
+            autostart=self.autostart,
+        )
+        if not srv.autostart:
+            yield srv
+            return
+
+        srv.listen()
+        log.info("http server listening", addr=srv.addr())
+        task = asyncio.create_task(srv.serve())
+        task.add_done_callback(lambda t: _report(t, log))
+        # даём serve стартовать: иначе close() контейнера пришёл бы раньше первого шага задачи
+        await asyncio.sleep(0)
+        try:
+            yield srv
+        finally:
+            await srv.stop()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     @provide
     def app(self, server: Server) -> FastAPI:
+        """FastAPI-приложение сервера: на нём регистрируются роуты консьюмера."""
         return server.app
 
 
+def _report(task: asyncio.Task[None], log: Logger) -> None:
+    """Упавший listener — не «работающий» сервис: терминальная ошибка обязана попасть в лог."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.error("http server stopped", err=repr(exc))
+
+
 def setup(app: FastAPI, container: object) -> None:
-    """Прокидывает dishka-container в FastAPI (FromDishka в роутах). Тонкая
-    обёртка над dishka.integrations.fastapi.setup_dishka — чтобы consumer'у не
-    тянуть интеграцию напрямую."""
+    """Прокидывает dishka-контейнер в FastAPI, чтобы роуты принимали `FromDishka[...]`."""
     setup_dishka(container, app)  # type: ignore[arg-type]

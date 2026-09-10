@@ -1,88 +1,102 @@
-"""MaxBodyConfig + MaxBodyMiddleware: отклоняет запросы с телом больше
-max_bytes ответом 413 (APIError) и инкрементит http_max_body_rejections_total.
-Лимит 0 → проверка отключена. Проверяет Content-Length, а при его отсутствии
-(chunked) — считает байты по мере чтения тела.
-"""
+"""Лимит тела запроса: конфиг, ошибка чтения и middleware."""
 
 from __future__ import annotations
 
-import json
+from http import HTTPStatus
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, model_validator
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .error import APIError, error
-from .metrics import HTTPInstruments
+from pylibinfra._internal import configkit
+from pylibinfra._internal.configkit import KitSettings
+
+from .error import APIError, HttpkitError, error, write_error
+from .metrics import Instruments, instruments, route_label
+from .response import BODY_OVERFLOW_KEY, header, tap
 
 
-class MaxBodyConfig(BaseSettings):
-    model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
+class MaxBodyError(HttpkitError):
+    """Тело запроса превысило `HTTP_MAX_BODY_BYTES`; поднимается из `receive` при чтении."""
+
+
+class MaxBodyConfig(KitSettings):
+    """Потолок тела запроса; `max_bytes = 0` выключает лимит."""
+
+    model_config = configkit.settings_config()
 
     max_bytes: int = Field(default=1048576, validation_alias="HTTP_MAX_BODY_BYTES")
 
+    @model_validator(mode="after")
+    def _check(self) -> MaxBodyConfig:
+        if self.max_bytes < 0:
+            raise ValueError("max_bytes must be >= 0")
+        return self
 
-def _too_large() -> APIError:
-    return error("PAYLOAD_TOO_LARGE", 413, "request body too large")
+
+def too_large() -> APIError:
+    """Ответ 413 для запроса, тело которого превысило лимит."""
+    return error("PAYLOAD_TOO_LARGE", HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request body too large")
+
+
+def _declared_length(scope: Scope) -> int:
+    raw = header(scope, "Content-Length")
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
 
 
 class MaxBodyMiddleware:
-    def __init__(self, app: ASGIApp, cfg: MaxBodyConfig, instruments: HTTPInstruments) -> None:
+    """Отвечает 413 на слишком большое тело и считает `http_max_body_rejections_total`.
+
+    Объявленный `Content-Length` отбивается до чтения; тело без него считается по мере чтения и
+    поднимает `MaxBodyError` из `receive`. Обработчик, не читающий тело, о превышении не узнаёт.
+    """
+
+    def __init__(self, app: ASGIApp, cfg: MaxBodyConfig, instr: Instruments | None = None) -> None:
+        """`max_bytes = 0` делает middleware сквозным."""
         self._app = app
         self._max = cfg.max_bytes
-        self._instr = instruments
+        self._instr = instr if instr is not None else instruments()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Переполнение отмечается в scope: 413 отдаёт и обработчик ошибок, если ответ уже его."""
         if scope["type"] != "http" or self._max <= 0:
             await self._app(scope, receive, send)
             return
 
-        if _declared_length(scope) > self._max:
-            await self._reject(scope, send)
-            return
+        observed = tap(scope, send)
+        try:
+            if _declared_length(scope) > self._max:
+                scope[BODY_OVERFLOW_KEY] = True
+                await write_error(observed.send, too_large())
+                return
+            try:
+                await self._app(scope, self._counting(scope, receive), observed.send)
+            except MaxBodyError:
+                if observed.started:
+                    raise
+                await write_error(observed.send, too_large())
+            except BaseExceptionGroup as group:
+                # Обработчик, читающий тело внутри task-group, отдаёт ошибку завёрнутой.
+                if observed.started or group.subgroup(MaxBodyError) is None:
+                    raise
+                await write_error(observed.send, too_large())
+        finally:
+            if scope.get(BODY_OVERFLOW_KEY):
+                self._instr.max_body_rejections.add(1, {"path": route_label(scope)})
 
-        await self._app(scope, self._counting_receive(scope, receive, send), send)
-
-    def _counting_receive(self, scope: Scope, receive: Receive, send: Send) -> Receive:
+    def _counting(self, scope: Scope, receive: Receive) -> Receive:
         seen = 0
-        rejected = False
 
         async def wrapped() -> Message:
-            nonlocal seen, rejected
+            nonlocal seen
             message = await receive()
             if message["type"] == "http.request":
-                seen += len(message.get("body", b""))
-                if seen > self._max and not rejected:
-                    rejected = True
-                    self._count(scope)
-                    # сигналим handler'у разрыв тела; reject уже отправляется
-                    # выше по Content-Length — для chunked это страховка.
-                    return {"type": "http.disconnect"}
+                seen += len(message.get("body", b"") or b"")
+                if seen > self._max:
+                    scope[BODY_OVERFLOW_KEY] = True
+                    raise MaxBodyError("httpkit: request body too large")
             return message
 
         return wrapped
-
-    async def _reject(self, scope: Scope, send: Send) -> None:
-        self._count(scope)
-        body = json.dumps(_too_large().with_defaults().to_body()).encode()
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 413,
-                "headers": [(b"content-type", b"application/problem+json")],
-            }
-        )
-        await send({"type": "http.response.body", "body": body})
-
-    def _count(self, scope: Scope) -> None:
-        self._instr.max_body_rejections.add(1, {"path": scope.get("path", "")})
-
-
-def _declared_length(scope: Scope) -> int:
-    for name, value in scope.get("headers", []):
-        if name == b"content-length":
-            try:
-                return int(value)
-            except ValueError:
-                return 0
-    return 0

@@ -1,51 +1,37 @@
-"""Guard против brute-force на login-эндпойнты: считает неудачные попытки
-per-subject (логин/email) и per-IP, при превышении порога возвращает
-LockState. Core-абстракция (Guard + Store-port) отделена от pgstore-реализации.
-"""
+"""Core-абстракции guard'а: `LockState`, request-path `Guard` и maintenance `Cleaner`."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from pylibinfra.clockkit import Clock
-
 
 @dataclass(frozen=True, slots=True)
 class LockState:
+    """Активная блокировка пары `(subject, ip)`; `until` — по часам хранилища."""
+
     until: datetime
+    failed_count: int = 0
 
 
 @runtime_checkable
-class Store(Protocol):
-    # Возвращает сырой locked_until (без сравнения с now) — решение «истёк ли
-    # lockout» принимает Guard через Clock, чтобы оно было тестируемым.
-    async def read(self, subject: str, ip: str) -> datetime | None: ...
-
-    async def record_failure(self, subject: str, ip: str) -> None: ...
-
-    async def reset(self, subject: str, ip: str) -> None: ...
-
-    async def cleanup(self) -> None: ...
-
-
-class Guard:
-    def __init__(self, store: Store, clock: Clock) -> None:
-        self._store = store
-        self._clock = clock
+class Guard(Protocol):
+    """Request-path guard'а: проверка блокировки и учёт исхода попытки."""
 
     async def check(self, subject: str, ip: str) -> LockState | None:
-        locked_until = await self._store.read(subject, ip)
-        if locked_until is not None and locked_until > self._clock.now():
-            return LockState(until=locked_until)
-        return None
+        """None, если пара не заблокирована, иначе активный `LockState`; счётчик не меняет."""
 
-    async def record_failure(self, subject: str, ip: str) -> None:
-        await self._store.record_failure(subject, ip)
+    async def record_failure(self, subject: str, ip: str) -> LockState | None:
+        """Учитывает неудачу; `LockState`, если после неё блокировка активна, иначе None."""
 
     async def record_success(self, subject: str, ip: str) -> None:
-        await self._store.reset(subject, ip)
+        """Снимает историю попыток пары — успех обнуляет счётчик."""
 
-    # Удаляет истёкшие attempt-строки (unlocked И старше Config.cleanup_retention).
-    # Идемпотентна; вызывается периодической джобой.
+
+@runtime_checkable
+class Cleaner(Protocol):
+    """Maintenance-путь guard'а: его реализуют хранилища, а не фейки вокруг `Guard`."""
+
     async def cleanup(self) -> None:
-        await self._store.cleanup()
+        """Удаляет разблокированные строки старше `Config.cleanup_retention`; идемпотентна."""

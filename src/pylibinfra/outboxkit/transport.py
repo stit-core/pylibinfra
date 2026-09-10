@@ -1,23 +1,23 @@
-"""Transport — порт публикации, через который Worker отдаёт события в брокер.
+"""Transport — порт публикации в брокер и его JetStream-реализация поверх `natskit.StreamBus`.
 
-Контракт: возврат без ошибки — только после подтверждённого персиста (JetStream
-PubAck); иначе Worker не метит событие published и переотправит следующим тиком.
-publish — одиночный (ordered-режим), publish_batch — async-батч; results[i] is
-None ⇒ i-е подтверждено. Реализация StreamTransport адаптирует natskit.StreamBus.
+Контракт: возврат без ошибки — только после подтверждённого персиста (`PubAck`),
+иначе `Worker` не пометит событие published и переотправит его следующим тиком.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
 from pylibinfra.natskit import StreamBus, StreamMsg
 
+from .config import DEFAULT_INSTANCE
+
 
 @dataclass(frozen=True, slots=True)
 class OutMsg:
-    """Событие outbox на публикацию. id становится Nats-Msg-Id: повторная
-    публикация той же строки (ретрай тика) дедуплицируется стримом."""
+    """Событие outbox на публикацию; `id` становится `Nats-Msg-Id` (дедуп переотправки)."""
 
     id: int
     subject: str
@@ -25,40 +25,56 @@ class OutMsg:
 
 
 class Transport(Protocol):
-    async def publish(self, msg: OutMsg) -> None: ...
-    async def publish_batch(self, msgs: list[OutMsg]) -> list[Exception | None]: ...
+    """Порт публикации: одиночная (ordered) и батчевая (batch) отправка."""
+
+    async def publish(self, msg: OutMsg) -> None:
+        """Публикует одно событие; возврат без ошибки = персист подтверждён."""
+
+    async def publish_batch(self, msgs: Sequence[OutMsg]) -> list[Exception | None]:
+        """Публикует батч; `results[i] is None` — i-е событие подтверждено."""
 
 
 class StreamTransport:
+    """Адаптер `natskit.StreamBus` под `Transport` с namespace'ным `Nats-Msg-Id`."""
+
     def __init__(self, sb: StreamBus, namespace: str = "") -> None:
         self._sb = sb
         self._namespace = namespace
+        # Доменный subject в label'е publish-метрик дал бы неограниченную кардинальность.
+        self._metric_subject = namespace or DEFAULT_INSTANCE
 
-    def _msg_id(self, id: int) -> str:
-        if not self._namespace:
-            return str(id)
-        return f"{self._namespace}:{id}"
+    def _msg_id(self, row_id: int) -> str:
+        return f"{self._namespace}:{row_id}" if self._namespace else str(row_id)
 
     async def publish(self, msg: OutMsg) -> None:
-        await self._sb.publish_stream(msg.subject, msg.payload, self._msg_id(msg.id))
+        """Публикует событие в стрим и ждёт `PubAck`."""
+        await self._sb.publish_stream(
+            msg.subject,
+            msg.payload,
+            msg_id=self._msg_id(msg.id),
+            metric_subject=self._metric_subject,
+        )
 
-    async def publish_batch(self, msgs: list[OutMsg]) -> list[Exception | None]:
-        sm = [
-            StreamMsg(subject=m.subject, payload=m.payload, msg_id=self._msg_id(m.id)) for m in msgs
+    async def publish_batch(self, msgs: Sequence[OutMsg]) -> list[Exception | None]:
+        """Публикует батч async'ом и отдаёт исход каждого сообщения."""
+        batch = [
+            StreamMsg(
+                subject=m.subject,
+                payload=m.payload,
+                msg_id=self._msg_id(m.id),
+                metric_subject=self._metric_subject,
+            )
+            for m in msgs
         ]
-        return await self._sb.publish_stream_batch(sm)
+        return await self._sb.publish_stream_batch(batch)
 
 
-def new_stream_transport(sb: StreamBus) -> Transport:
-    """Адаптирует natskit JetStream (StreamBus) под Transport. Nats-Msg-Id = id
-    строки — корректно, пока outbox-таблица одна (BIGSERIAL глобально уникален).
-    Несколько таблиц на один стрим → new_stream_transport_for."""
-    return StreamTransport(sb)
+def new_stream_transport(sb: StreamBus, namespace: str = "") -> Transport:
+    """Адаптирует JetStream под `Transport`.
 
-
-def new_stream_transport_for(sb: StreamBus, namespace: str) -> Transport:
-    """namespace'ит Nats-Msg-Id ("<namespace>:<id>") для нескольких outbox-инстансов,
-    делящих один JetStream-стрим. Per-domain таблицы имеют независимый BIGSERIAL —
-    голый id повторяется между таблицами, а stream-дедуп идёт по Msg-Id (не по
-    subject) и молча уронил бы второй факт. namespace обычно = имя Outbox-инстанса."""
+    Без namespace `Nats-Msg-Id` — голый id строки: корректно, пока outbox-таблица одна
+    (`BIGSERIAL` глобально уникален). Несколько таблиц на одном стриме имеют независимые
+    `BIGSERIAL`, поэтому им нужен namespace (обычно имя инстанса): дедуп идёт по `Msg-Id`
+    и молча уронил бы второй факт.
+    """
     return StreamTransport(sb, namespace)

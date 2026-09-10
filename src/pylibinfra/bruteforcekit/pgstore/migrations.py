@@ -1,12 +1,10 @@
-"""Доступ к бандленным .sql-миграциям (аналог embed.FS в Go).
+"""MIGRATIONS — источник миграций кита для `pgkit.MigrationSources`."""
 
-yoyo читает миграции с файловой системы, поэтому отдаём путь к директории —
-консьюмер передаёт его в pgkit.migrate_up через MigrateConfig.path.
-"""
+from __future__ import annotations
 
 from importlib.resources import files
 from pathlib import Path
 
+from pylibinfra.pgkit import Source
 
-def migrations_dir() -> str:
-    return str(Path(str(files(__package__).joinpath("migrations"))))
+MIGRATIONS = Source(name="bruteforcekit", path=str(Path(str(files(__package__))) / "migrations"))

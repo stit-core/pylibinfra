@@ -1,79 +1,74 @@
+"""dishka-проводка кита: клиент, JSON-слой и именованные бэкенды."""
+
+from __future__ import annotations
+
 from collections.abc import AsyncIterator
 
 import httpx
 from dishka import Provider, Scope, provide
 
 from .api import ApiClient, ApiClients
-from .breaker import BreakerConfig
-from .client import Client
+from .client import BeforeAttempt, Client
 from .config import BackendConfig, BackendsConfig, Config
 
+OptionalTransport = httpx.AsyncBaseTransport | None
+OptionalBeforeAttempt = BeforeAttempt | None
 
-# Provider не provide'ит Config (asymmetry note, см. telemetry/module.py) — caller
-# регистрирует Config сам. Дешёвый mode: new_config() / new_breaker_config() ниже.
+
 class HttpClientProvider(Provider):
+    """Provide'ит `Client` и `ApiClient`; на стопе клиент закрывается.
+
+    `Config` регистрирует caller (asymmetry note). Собственный транспорт и hook
+    перед попыткой — паттерн override: свой Provider регистрируется ПОСЛЕ этого.
+    """
+
     scope = Scope.APP
 
     @provide
-    async def client(self, cfg: Config) -> AsyncIterator[Client]:
-        http = httpx.AsyncClient(
-            timeout=cfg.timeout,
-            base_url=cfg.base_url or "",
-        )
-        c = Client(cfg, http)
+    def default_transport(self) -> OptionalTransport:
+        """Дефолт опциональной зависимости: транспорт httpx по умолчанию."""
+        return None
+
+    @provide
+    def default_before_attempt(self) -> OptionalBeforeAttempt:
+        """Дефолт опциональной зависимости: hook перед попыткой не задан."""
+        return None
+
+    @provide
+    async def client(
+        self,
+        cfg: Config,
+        transport: OptionalTransport,
+        before_attempt: OptionalBeforeAttempt,
+    ) -> AsyncIterator[Client]:
+        """Клиент на весь App-scope; на выходе пул соединений закрывается."""
+        c = Client(cfg, transport=transport, before_attempt=before_attempt)
         yield c
         await c.aclose()
 
     @provide
     def api(self, client: Client) -> ApiClient:
+        """JSON-слой поверх клиента."""
         return ApiClient(client)
 
 
-# Отдельный Provider (не метод HttpClientProvider): именованные бэкенды нужны не всем,
-# а их граф требует BackendsConfig — одиночный клиент не должен этого требовать.
 class ApiClientsProvider(Provider):
+    """Provide'ит `ApiClients` из `BackendsConfig` — по клиенту на объявленный бэкенд.
+
+    Отдельный Provider: именованные бэкенды нужны не всем, а их граф требует
+    `BackendsConfig` — одиночный клиент не должен этого требовать.
+    """
+
     scope = Scope.APP
 
     @provide
     async def clients(self, cfg: BackendsConfig) -> AsyncIterator[ApiClients]:
-        built: dict[str, ApiClient] = {}
-        for name, backend in cfg.backends.items():
-            built[name] = ApiClient(_build_client(name, backend))
+        """Клиенты всех объявленных бэкендов; на выходе каждый закрывается."""
+        built = {name: ApiClient(_build_client(backend)) for name, backend in cfg.backends.items()}
         yield ApiClients(built)
         for api in built.values():
             await api.aclose()
 
 
-def _build_client(name: str, backend: BackendConfig) -> Client:
-    # Runtime-Config собирается из декларации целиком (каждое поле — явно): init-аргументы
-    # приоритетнее env-источников BaseSettings, поэтому глобальные HTTPCLIENT_* не
-    # протекают в именованный бэкенд. Имя breaker'а = ключ бэкенда — per-backend
-    # ряды http_client_breaker_* без коллизий.
-    runtime = Config(
-        timeout=backend.timeout,
-        max_retries=backend.max_retries,
-        retry_wait=backend.retry_wait,
-        base_url=backend.base_url,
-        breaker=BreakerConfig(
-            failure_threshold=backend.breaker.failure_threshold,
-            recovery_timeout=backend.breaker.recovery_timeout,
-            success_threshold=backend.breaker.success_threshold,
-            name=name,
-        ),
-    )
-    http = httpx.AsyncClient(
-        timeout=backend.timeout, base_url=backend.base_url, headers=backend.headers
-    )
-    return Client(runtime, http)
-
-
-def new_config() -> Config:
-    return Config()
-
-
-def new_breaker_config() -> BreakerConfig:
-    return BreakerConfig()
-
-
-def new_backends_config() -> BackendsConfig:
-    return BackendsConfig()
+def _build_client(backend: BackendConfig) -> Client:
+    return Client(backend.client_config(), headers=backend.headers)

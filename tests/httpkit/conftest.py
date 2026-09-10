@@ -1,43 +1,67 @@
+"""Kit-специфика: capture-логгер из logtest и сборка тестового приложения httpkit."""
+
+from __future__ import annotations
+
 from collections.abc import Callable
+from typing import Any
 
+import httpx
 import pytest
-from opentelemetry import metrics
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from fastapi import FastAPI
+
+from pylibinfra.httpkit import Config, build_app
+from pylibinfra.logkit import Logger
+from pylibinfra.testkit.logtest import Capture, Entry
 
 
-def metric_value(reader: InMemoryMetricReader, name: str) -> float:
-    data = reader.get_metrics_data()
-    total = 0.0
-    if data is None:
-        return total
-    for rm in data.resource_metrics:
-        for sm in rm.scope_metrics:
-            for m in sm.metrics:
-                if m.name != name:
-                    continue
-                for point in m.data.data_points:
-                    total += getattr(point, "value", 0) or getattr(point, "count", 0)
-    return total
+@pytest.fixture(autouse=True)
+def _fresh_meter(metric_reader: object) -> object:
+    """Каждый тест кита получает свой MeterProvider: инструменты создаются после его установки."""
+    return metric_reader
 
 
 @pytest.fixture
-def metric_reader() -> InMemoryMetricReader:
-    # OTel держит MeterProvider set-once глобально; в тестах сбрасываем guard,
-    # иначе set_meter_provider молча игнорируется и reader не привязан. Provider
-    # выставляем ДО создания app/instruments — get_meter("app") резолвится лениво.
-    from opentelemetry.metrics import _internal as metrics_internal
-    from opentelemetry.util._once import Once
+def log() -> Capture:
+    return Capture()
 
-    metrics_internal._METER_PROVIDER_SET_ONCE = Once()
-    metrics_internal._METER_PROVIDER = None
-    reader = InMemoryMetricReader()
-    metrics.set_meter_provider(MeterProvider(metric_readers=[reader]))
-    return reader
+
+def entries(log: Capture, msg: str) -> list[Entry]:
+    return [entry for entry in log.entries() if entry.msg == msg]
+
+
+def one(log: Capture, msg: str) -> Entry:
+    found = entries(log, msg)
+    assert len(found) == 1, f"want exactly one {msg!r}, got {found}"
+    return found[0]
+
+
+def client(app: FastAPI) -> httpx.AsyncClient:
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver")
+
+
+def routed(cfg: Config, log: Logger, **kwargs: Any) -> FastAPI:
+    """Приложение кита с типовым набором роутов для тестов цепочки."""
+    app = build_app(cfg, log, **kwargs)
+
+    @app.get("/ok")
+    async def ok() -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.get("/users/{uid}")
+    async def user(uid: str) -> dict[str, str]:
+        return {"id": uid}
+
+    @app.get("/boom")
+    async def boom() -> dict[str, bool]:
+        raise RuntimeError("kaboom: secret-dsn")
+
+    @app.post("/echo")
+    async def echo(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return {"got": payload or {}}
+
+    return app
 
 
 @pytest.fixture
-def read_metric(
-    metric_reader: InMemoryMetricReader,
-) -> Callable[[str], float]:
-    return lambda name: metric_value(metric_reader, name)
+def make_app() -> Callable[..., FastAPI]:
+    return routed

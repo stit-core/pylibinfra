@@ -54,3 +54,20 @@ async def test_empty_secret_fails_closed() -> None:
     async with _client(app) as c:
         r = await c.post("/hook", headers={_HEADER: ""})
         assert r.status_code == 403
+
+
+def test_secret_is_not_printable() -> None:
+    cfg = SharedSecretConfig(header=_HEADER, secret="s3cret")
+
+    assert "s3cret" not in repr(cfg)
+    assert "s3cret" not in str(cfg.model_dump())
+    assert cfg.secret.get_secret_value() == "s3cret"
+
+
+async def test_non_ascii_header_is_403_not_500() -> None:
+    # Starlette отдаёт заголовок как latin-1-строку; байт >0x7F не должен ронять сравнение.
+    app = _app(SharedSecretConfig(header=_HEADER, secret="s3cret"))
+    async with _client(app) as c:
+        r = await c.post("/hook", headers={_HEADER.encode(): b"\xff\xfe"})
+        assert r.status_code == 403
+        assert r.json()["code"] == "FORBIDDEN"

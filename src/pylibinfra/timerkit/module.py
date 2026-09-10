@@ -1,20 +1,32 @@
+"""TimerkitProvider — `Runner` поверх кортежа `Jobs`, собранного App-Provider'ом консьюмера."""
+
 from collections.abc import AsyncIterator
 
 from dishka import Provider, Scope, provide
 
+from pylibinfra.clockkit import Clock
 from pylibinfra.logkit import Logger
 
-from .timerkit import PeriodicJob, Runner
+from .timerkit import Jobs, Runner
 
 
-# Provider не provide'ит list[PeriodicJob] (asymmetry note, см. cachekit/module.py) —
-# caller собирает джобы из своих сервисов и регистрирует список сам.
 class TimerkitProvider(Provider):
+    """Provider не собирает `Jobs` сам — их регистрирует консьюмер, перекрывая пустой дефолт.
+
+    `Logger` и `Clock` берутся из контейнера (`LogkitProvider`, `ClockProvider`).
+    """
+
     scope = Scope.APP
 
     @provide
-    async def runner(self, jobs: list[PeriodicJob], log: Logger) -> AsyncIterator[Runner]:
-        r = Runner(jobs, log)
-        r.start()
-        yield r
-        await r.stop()
+    def default_jobs(self) -> Jobs:
+        """Пустой набор job'ов; консьюмер регистрирует свой Provider ПОСЛЕ этого."""
+        return ()
+
+    @provide
+    async def runner(self, jobs: Jobs, log: Logger, clock: Clock) -> AsyncIterator[Runner]:
+        """Runner живёт от получения из контейнера до его закрытия."""
+        runner = Runner(jobs, log, clock=clock)
+        runner.start()
+        yield runner
+        await runner.stop()

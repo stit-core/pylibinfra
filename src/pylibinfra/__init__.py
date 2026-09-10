@@ -1,3 +1,8 @@
 """pylibinfra — инфраструктурные Python-kit'ы с observability из коробки."""
 
-__version__ = "0.5.2"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("pylibinfra")
+except PackageNotFoundError:  # checkout без установленного дистрибутива
+    __version__ = "dev"

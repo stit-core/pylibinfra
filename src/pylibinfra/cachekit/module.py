@@ -1,51 +1,66 @@
-from collections.abc import AsyncIterator, Awaitable, Callable
-from datetime import timedelta
+"""dishka-проводка кита: клиент, `Cache`, `IdempotencyStore`, health-проба и `new_config`."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
 
 import redis.asyncio as redis
 from dishka import Provider, Scope, provide
-from opentelemetry.instrumentation.redis import RedisInstrumentor
+
+from pylibinfra import healthkit
 
 from .cache import Cache, RedisCache
+from .client import check_server_version, new_client
 from .config import Config
-from .idempotency import CacheIdempotencyStore, IdempotencyStore
+from .errors import CacheError
+from .idempotency import IdempotencyStore
 
 
-# Provider не provide'ит Config (asymmetry note, см. flagkit/module.py) — caller
-# регистрирует Config сам. Дешёвый mode: new_config() ниже. Probe тоже не
-# provide'ится: его тип Callable[[], Awaitable[None]] коллизит с любым другим
-# health-probe (как natskit/module.go), caller регистрирует с нужным тегом сам.
 class CachekitProvider(Provider):
+    """Граф кита: `redis.Redis` → `Cache` → `IdempotencyStore`.
+
+    `Config` регистрирует caller (asymmetry note), пробу — тоже: `probe` кладёт
+    консьюмер в свой `healthkit.Probes`.
+    """
+
     scope = Scope.APP
 
     @provide
     async def client(self, cfg: Config) -> AsyncIterator[redis.Redis]:
-        # Спаны команд redis по умолчанию: без них cache hit/miss и latency
-        # неотличимы от прочего I/O. instrument() идемпотентен.
-        RedisInstrumentor().instrument()
-        r: redis.Redis = redis.from_url(
-            cfg.url,
-            max_connections=cfg.pool_size,
-            socket_connect_timeout=cfg.dial_timeout,
-            socket_timeout=cfg.read_timeout,
-        )
-        yield r
-        await r.aclose()
+        """Клиент Redis: `PING` и проверка версии сервера на старте, `aclose()` на стопе."""
+        client = new_client(cfg)
+        try:
+            if cfg.ping_on_start:
+                await client.ping()
+                if not cfg.skip_version_check:
+                    await check_server_version(client)
+            yield client
+        finally:
+            await client.aclose()
 
     @provide(provides=Cache)
-    def cache(self, client: redis.Redis) -> RedisCache:
-        return RedisCache(client)
+    def cache(self, client: redis.Redis, cfg: Config) -> RedisCache:
+        """`Cache` поверх клиента с префиксом ключей `REDIS_KEY_PREFIX`."""
+        return RedisCache(client, cfg.key_prefix)
 
-    @provide(provides=IdempotencyStore)
-    def idempotency(self, cache: Cache, cfg: Config) -> CacheIdempotencyStore:
-        return CacheIdempotencyStore(cache, timedelta(seconds=cfg.idempotency_ttl))
+    @provide
+    def idempotency(self, cache: Cache) -> IdempotencyStore:
+        """Store идемпотентности; в ключ `httpkit.IdempotencyStore` его кладёт консьюмер."""
+        return IdempotencyStore(cache)
 
 
-def probe(cache: Cache) -> Callable[[], Awaitable[None]]:
+def probe(cache: Cache) -> healthkit.Probe:
+    """Проба `cachekit`: `PING`; ошибка префиксуется именем кита."""
+
     async def check() -> None:
-        await cache.ping()
+        try:
+            await cache.ping()
+        except Exception as exc:
+            raise CacheError(f"cachekit: ping: {exc}") from exc
 
-    return check
+    return healthkit.new("cachekit", check)
 
 
-def new_config() -> Config:
-    return Config()
+def new_cache(cfg: Config) -> RedisCache:
+    """Собирает `RedisCache` вне DI; закрывать — `aclose()`, версия сервера не проверяется."""
+    return RedisCache(new_client(cfg), cfg.key_prefix)

@@ -1,5 +1,4 @@
-"""audittest — in-memory фейк auditkit.Recorder/Store с ассерт-хелперами для
-тестов консьюмера (без БД)."""
+"""audittest — in-memory `auditkit.Logger` для unit-тестов домена без Postgres."""
 
 from .recorder import Recorder
 

@@ -1,56 +1,49 @@
+"""Transport поверх JetStream: namespaced `Nats-Msg-Id` и конечный label publish-метрик."""
+
 from __future__ import annotations
 
-from typing import Any
-
-from pylibinfra.natskit import StreamMsg
-from pylibinfra.outboxkit import OutMsg, new_stream_transport, new_stream_transport_for
+from pylibinfra.outboxkit import DEFAULT_INSTANCE, OutMsg, new_stream_transport
+from pylibinfra.testkit import natstest
 
 
-class CapturingBus:
-    def __init__(self) -> None:
-        self.batch: list[StreamMsg] = []
-        self.single: list[tuple[str, bytes, str | None]] = []
+async def test_default_transport_uses_bare_row_id() -> None:
+    recorder = natstest.new()
+    transport = new_stream_transport(recorder)
 
-    async def publish_stream(self, subject: str, payload: bytes, msg_id: str | None = None) -> None:
-        self.single.append((subject, payload, msg_id))
+    await transport.publish(OutMsg(id=42, subject="order.created", payload=b"{}"))
 
-    async def publish_stream_batch(self, msgs: list[StreamMsg]) -> list[Exception | None]:
-        self.batch.extend(msgs)
-        return [None] * len(msgs)
-
-    async def subscribe_stream(self, stream: str, subject: str, durable: str, handler: Any) -> None:
-        raise NotImplementedError
-
-    async def drain(self) -> None:
-        return
+    published = recorder.published()[0]
+    assert published.msg_id == "42"
+    # Доменный subject в label'е publish-метрик дал бы неограниченную кардинальность.
+    assert published.metric_subject == DEFAULT_INSTANCE
+    assert published.jetstream is True
 
 
-async def test_msg_id_bare_by_default() -> None:
-    bus = CapturingBus()
-    tr = new_stream_transport(bus)  # type: ignore[arg-type]
-    await tr.publish_batch([OutMsg(id=42, subject="amocrm.x", payload=b"{}")])
-    assert bus.batch[0].msg_id == "42"
+async def test_namespaced_transport_prefixes_msg_id() -> None:
+    recorder = natstest.new()
+    orders = new_stream_transport(recorder, "orders")
+    leads = new_stream_transport(recorder, "leads")
+
+    results = await orders.publish_batch(
+        [
+            OutMsg(id=1, subject="order.created", payload=b"1"),
+            OutMsg(id=2, subject="order.created", payload=b"2"),
+        ]
+    )
+    await leads.publish(OutMsg(id=1, subject="lead.created", payload=b"3"))
+
+    assert results == [None, None]
+    ids = [m.msg_id for m in recorder.published()]
+    # Один id в двух namespace'ах даёт разные Msg-Id: иначе дедуп уронил бы второй факт.
+    assert ids == ["orders:1", "orders:2", "leads:1"]
+    assert {m.metric_subject for m in recorder.published()} == {"orders", "leads"}
 
 
-async def test_msg_id_namespaced() -> None:
-    bus = CapturingBus()
-    tr = new_stream_transport_for(bus, "account")  # type: ignore[arg-type]
-    await tr.publish_batch([OutMsg(id=42, subject="amocrm.x", payload=b"{}")])
-    assert bus.batch[0].msg_id == "account:42"
+async def test_batch_failure_is_reported_per_message() -> None:
+    recorder = natstest.new()
+    recorder.set_publish_error(RuntimeError("bus down"))
+    transport = new_stream_transport(recorder, "orders")
 
+    results = await transport.publish_batch([OutMsg(id=1, subject="order.created", payload=b"1")])
 
-async def test_no_cross_table_collision() -> None:
-    bus = CapturingBus()
-    co = new_stream_transport_for(bus, "companies")  # type: ignore[arg-type]
-    le = new_stream_transport_for(bus, "leads")  # type: ignore[arg-type]
-    await co.publish_batch([OutMsg(id=1, subject="x", payload=b"{}")])
-    await le.publish_batch([OutMsg(id=1, subject="x", payload=b"{}")])
-    # один id в двух namespace'ах обязан давать разные Msg-Id
-    assert bus.batch[0].msg_id != bus.batch[1].msg_id
-
-
-async def test_single_publish_passes_msg_id() -> None:
-    bus = CapturingBus()
-    tr = new_stream_transport(bus)  # type: ignore[arg-type]
-    await tr.publish(OutMsg(id=7, subject="evt", payload=b"{}"))
-    assert bus.single == [("evt", b"{}", "7")]
+    assert isinstance(results[0], RuntimeError)

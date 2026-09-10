@@ -1,11 +1,4 @@
-"""build_invoice — kwargs для bot.send_invoice(chat_id, **invoice) с XTR-
-нормализацией. Telegram Stars: currency="XTR", provider_token пустой; amount у
-XTR — это количество звёзд (не сотые доли). Бизнес-цена/состав — на бэкенде.
-
-Одна линия (`amount=`) — XTR-шорткат; составной чек — `prices=[LabeledPrice, …]`.
-Чаевые (`max_tip_amount`/`suggested_tip_amounts`) — только фиат: Telegram отвергает
-tips на XTR, поэтому на Stars они отбрасываются.
-"""
+"""build_invoice — kwargs для `bot.send_invoice` с нормализацией под Telegram Stars."""
 
 from __future__ import annotations
 
@@ -13,6 +6,8 @@ from collections.abc import Sequence
 from typing import Any
 
 from aiogram.types import LabeledPrice
+
+from pylibinfra.tgbotkit.errors import PaymentError
 
 from .money import XTR
 
@@ -31,16 +26,30 @@ def build_invoice(
     suggested_tip_amounts: Sequence[int] | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
-    if prices is None:
-        if amount is None:
-            raise ValueError("build_invoice: pass exactly one of amount= or prices=")
-        line_items = [LabeledPrice(label=label or title, amount=amount)]
-    else:
-        if amount is not None:
-            raise ValueError("build_invoice: pass exactly one of amount= or prices=")
-        line_items = list(prices)
+    """Собирает инвойс из одной суммы (`amount=`) либо составного чека (`prices=`).
+
+    На `XTR` `provider_token` пустой, а чаевые отбрасываются — Telegram их для звёзд
+    отвергает; фиат без `provider_token` отвергается здесь же. Ровно один из
+    `amount`/`prices` обязателен, сумма — положительная, список строк чека —
+    непустой; иначе `PaymentError` вместо `400` от Telegram.
+    """
+    if (amount is None) == (prices is None):
+        raise PaymentError("tgbotkit: build_invoice: pass exactly one of amount= or prices=")
+    if amount is not None and amount <= 0:
+        raise PaymentError("tgbotkit: build_invoice: amount must be > 0")
+    line_items = (
+        list(prices)
+        if prices is not None
+        else [LabeledPrice(label=label or title, amount=amount or 0)]
+    )
+    if not line_items:
+        raise PaymentError("tgbotkit: build_invoice: prices must not be empty")
 
     is_stars = currency == XTR
+    if not is_stars and not provider_token:
+        raise PaymentError(
+            f"tgbotkit: build_invoice: provider_token is required for currency != {XTR}"
+        )
     invoice: dict[str, Any] = {
         "title": title,
         "description": description,
@@ -49,7 +58,6 @@ def build_invoice(
         "prices": line_items,
         "provider_token": None if is_stars else provider_token,
     }
-    # Чаевые поддерживает только фиат — на XTR Telegram отвергнет max_tip_amount.
     if not is_stars and max_tip_amount is not None:
         invoice["max_tip_amount"] = max_tip_amount
         if suggested_tip_amounts is not None:

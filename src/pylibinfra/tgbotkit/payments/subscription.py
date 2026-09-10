@@ -1,19 +1,16 @@
-"""build_subscription_link — рекуррентный инвойс-линк (Telegram Stars subscription).
-
-create_invoice_link(subscription_period=…) выдаёт ссылку на подписку: Telegram сам
-списывает price каждый период и шлёт successful_payment с is_recurring. Для XTR период
-фиксирован Telegram'ом — 30 дней (2_592_000 c); иные значения он отвергает, поэтому
-валидируем заранее. Отмена/возврат подписки — refund_charge по charge_id платежа.
-"""
+"""build_subscription_link — рекуррентный инвойс-линк (подписка Telegram Stars)."""
 
 from __future__ import annotations
 
 from aiogram import Bot
 from aiogram.types import LabeledPrice
 
+from pylibinfra.tgbotkit.errors import PaymentError
+
 from .money import Money
 
-STARS_SUBSCRIPTION_PERIOD = 2_592_000  # 30 дней — единственный период для XTR-подписок
+STARS_SUBSCRIPTION_PERIOD = 2_592_000
+"""30 дней — единственный период, который Telegram принимает для XTR-подписки."""
 
 
 async def build_subscription_link(
@@ -27,9 +24,22 @@ async def build_subscription_link(
     label: str = "",
     provider_token: str | None = None,
 ) -> str:
+    """Ссылка на подписку: Telegram списывает цену каждый период и шлёт `successful_payment`.
+
+    Период XTR фиксирован Telegram'ом, поэтому иной валится `PaymentError` до вызова API,
+    как и неположительная цена и фиат без `provider_token`. Отмена подписки —
+    `refund_charge` по `charge_id` платежа.
+    """
+    if price.amount_minor <= 0:
+        raise PaymentError("tgbotkit: build_subscription_link: price must be > 0")
     if price.is_stars and subscription_period != STARS_SUBSCRIPTION_PERIOD:
-        raise ValueError(
-            f"XTR subscriptions require subscription_period={STARS_SUBSCRIPTION_PERIOD} (30d)"
+        raise PaymentError(
+            "tgbotkit: build_subscription_link: XTR requires "
+            f"subscription_period={STARS_SUBSCRIPTION_PERIOD} (30d)"
+        )
+    if not price.is_stars and not provider_token:
+        raise PaymentError(
+            "tgbotkit: build_subscription_link: provider_token is required for currency != XTR"
         )
     return await bot.create_invoice_link(
         title=title,

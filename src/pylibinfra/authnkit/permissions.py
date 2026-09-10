@@ -1,25 +1,32 @@
-"""RBAC-примитивы: глобальный реестр роль → набор пермишенов и has().
+"""RBAC: экземплярный реестр «роль → набор прав»."""
 
-Реестр глобальный (как roles в golibinfra): consumer заполняет его на старте
-через register_role_permissions, проверки идут через has(). Lock защищает от
-гонки регистрация/чтение при ленивой инициализации ролей в разных потоках.
-"""
+from __future__ import annotations
 
 import threading
 
 Permission = str
-PermissionSet = frozenset[Permission]
-RolePermissions = dict[str, PermissionSet]
-
-_lock = threading.RLock()
-_roles: RolePermissions = {}
+"""Право в RBAC-реестре — строковый идентификатор вида `users:write`."""
 
 
-def register_role_permissions(role: str, *perms: Permission) -> None:
-    with _lock:
-        _roles[role] = frozenset(perms)
+class Registry:
+    """Реестр ролей: наполняется на старте приложения, читается на каждом запросе.
 
+    Неизвестная роль или право → `False` (fail-closed). Экземплярный: общего
+    состояния между контейнерами и тестами нет.
+    """
 
-def has(role: str, perm: Permission) -> bool:
-    with _lock:
-        return perm in _roles.get(role, frozenset())
+    def __init__(self) -> None:
+        # Реестр наполняется на старте, а читается из нескольких потоков
+        # (sync-хендлеры FastAPI) — замена набора роли должна быть атомарной.
+        self._lock = threading.RLock()
+        self._roles: dict[str, frozenset[Permission]] = {}
+
+    def register(self, role: str, *perms: Permission) -> None:
+        """Полностью заменяет набор прав роли."""
+        with self._lock:
+            self._roles[role] = frozenset(perms)
+
+    def has(self, role: str, perm: Permission) -> bool:
+        """Есть ли право `perm` у роли `role`; неизвестная роль или право → `False`."""
+        with self._lock:
+            return perm in self._roles.get(role, frozenset())

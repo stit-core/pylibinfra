@@ -1,18 +1,20 @@
-"""payments-подсистема (generic-механика): timeout-safe pre_checkout, дедуп
-charge/refund, invoice (XTR/фиат, составной чек, чаевые), subscription-линк,
-refund-обёртка + tg_payments_* метрики. Регистрация dispatcher-level хендлеров —
-через CommandBundle; бизнес (policy/usecase/gateway/диалоги) — в шаблоне.
+"""payments-подсистема: pre-checkout в дедлайн, дедуп платежей, инвойсы, подписки, возвраты.
+
+Эмитит `tg_payments_total{stage,result}`; политика цены и выдачи — в сервисе.
 """
 
-from .guard import ChargeGuard, RefundGuard
+from .guard import CHARGE_PREFIX, REFUND_PREFIX, ChargeGuard, RefundGuard
 from .invoice import build_invoice
-from .money import Money
+from .money import XTR, Money
 from .precheckout import PreCheckoutDecision, answer_pre_checkout
 from .refund import refund_charge
 from .subscription import STARS_SUBSCRIPTION_PERIOD, build_subscription_link
 
 __all__ = [
+    "CHARGE_PREFIX",
+    "REFUND_PREFIX",
     "STARS_SUBSCRIPTION_PERIOD",
+    "XTR",
     "ChargeGuard",
     "Money",
     "PreCheckoutDecision",

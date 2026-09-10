@@ -1,199 +1,332 @@
+"""Core NATS против живого сервера: доставка, queue-группы, backpressure, drain и сигналы."""
+
 from __future__ import annotations
 
 import asyncio
-import json
-from collections.abc import Awaitable, Callable
-from typing import Any
+from collections.abc import AsyncIterator, Callable
 
 import pytest
+import pytest_asyncio
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from pylibinfra.natskit import (
-    Config,
+    Bus,
+    ClosedError,
     Conn,
+    ConnectionClosedError,
     NatsBus,
+    headers_from_context,
+    new_conn,
+    probe,
     publish_json,
+    subject_from_context,
     subscribe_json,
+    subscribe_queue_json,
 )
+from pylibinfra.testkit import NatsFixture
+from pylibinfra.testkit.logtest import Capture
+
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
+
+_WAIT = 5.0
 
 
-class FakeMsg:
-    def __init__(self, subject: str, data: bytes, headers: dict[str, str]) -> None:
-        self.subject = subject
-        self.data = data
-        self.headers = headers
+@pytest_asyncio.fixture(loop_scope="module")
+async def bus_factory(
+    nats_server: NatsFixture,
+) -> AsyncIterator[Callable[..., AsyncIterator[tuple[Conn, Bus]]]]:
+    conns: list[Conn] = []
+
+    async def make(log: Capture | None = None, **overrides: object) -> tuple[Conn, Bus]:
+        cfg = nats_server.config(**overrides)
+        conn = await new_conn(cfg, log)
+        conns.append(conn)
+        return conn, NatsBus(conn, cfg, log)
+
+    yield make  # type: ignore[misc]
+    for conn in conns:
+        await conn.close(timeout=2)
 
 
-class FakeClient:
-    """Записывает publish'ы и хранит подписки; deliver() прогоняет cb по
-    записанным сообщениям синхронно в текущем event-loop'е."""
-
-    def __init__(self) -> None:
-        self.is_connected = True
-        self.published: list[tuple[str, bytes, dict[str, str]]] = []
-        self.queues: dict[str, str] = {}
-        self._subs: dict[str, Callable[[Any], Awaitable[None]]] = {}
-
-    async def publish(
-        self, subject: str, payload: bytes = b"", headers: dict[str, str] | None = None
-    ) -> None:
-        self.published.append((subject, payload, headers or {}))
-
-    async def subscribe(
-        self, subject: str, cb: Callable[[Any], Awaitable[None]], queue: str = ""
-    ) -> None:
-        self._subs[subject] = cb
-        if queue:
-            self.queues[subject] = queue
-
-    async def deliver(
-        self, subject: str, data: bytes, headers: dict[str, str] | None = None
-    ) -> None:
-        await self._subs[subject](FakeMsg(subject, data, headers or {}))
-
-
-def fake_conn() -> tuple[Conn, FakeClient]:
-    fc = FakeClient()
-    return Conn(fc), fc  # type: ignore[arg-type]
-
-
-async def drain_handlers(bus: NatsBus) -> None:
-    """Дожидается завершения spawned handler-тасок (cb обрабатывает сообщение
-    в отдельной таске под семафором)."""
-    while bus._tasks:
-        await asyncio.gather(*list(bus._tasks))
-
-
-async def test_publish_json_serializes_and_sends() -> None:
-    conn, fc = fake_conn()
-    bus = NatsBus(conn)
-    await publish_json(bus, "test.json", {"hello": "world"})
-
-    assert len(fc.published) == 1
-    subject, payload, _ = fc.published[0]
-    assert subject == "test.json"
-    assert payload == b'{"hello":"world"}'
-
-
-async def test_subscribe_json_deserializes() -> None:
-    conn, fc = fake_conn()
-    bus = NatsBus(conn)
-
-    got: asyncio.Future[dict[str, int]] = asyncio.get_event_loop().create_future()
+async def test_publish_subscribe_roundtrip(bus_factory: Callable[..., object]) -> None:
+    _, bus = await bus_factory()  # type: ignore[misc]
+    got: asyncio.Future[tuple[dict[str, int], str, dict[str, str]]] = (
+        asyncio.get_running_loop().create_future()
+    )
 
     async def handler(msg: dict[str, int]) -> None:
-        got.set_result(msg)
+        if not got.done():
+            got.set_result((msg, subject_from_context(), headers_from_context()))
 
-    await subscribe_json(bus, "test.json", handler)
-    await fc.deliver("test.json", json.dumps({"value": 42}).encode())
-    await drain_handlers(bus)
+    await subscribe_json(bus, "orders.*.created", handler)
+    await publish_json(
+        bus, "orders.42.created", {"id": 42}, headers={"Event-Type": "order.created"}
+    )
 
-    assert got.result() == {"value": 42}
+    payload, subject, headers = await asyncio.wait_for(got, _WAIT)
+    assert payload == {"id": 42}
+    # Wildcard-подписчик читает конкретный subject из контекста, а не из payload.
+    assert subject == "orders.42.created"
+    assert headers["Event-Type"] == "order.created"
 
 
-async def test_panic_recovery_does_not_crash() -> None:
-    conn, fc = fake_conn()
-    bus = NatsBus(conn)
+async def test_queue_group_load_balances(bus_factory: Callable[..., object]) -> None:
+    _, bus = await bus_factory()  # type: ignore[misc]
+    seen: list[int] = []
+    done = asyncio.Event()
 
-    after: asyncio.Future[bytes] = asyncio.get_event_loop().create_future()
+    async def handler(msg: dict[str, int]) -> None:
+        seen.append(msg["id"])
+        if len(seen) == 6:
+            done.set()
+
+    for _ in range(3):
+        await subscribe_queue_json(bus, "queue.work", "workers", handler)
+    for i in range(6):
+        await publish_json(bus, "queue.work", {"id": i})
+
+    await asyncio.wait_for(done.wait(), _WAIT)
+    await asyncio.sleep(0.2)
+    # Queue-группа: каждое сообщение ровно одному подписчику, без дублей.
+    assert sorted(seen) == [0, 1, 2, 3, 4, 5]
+
+
+async def test_handler_error_is_logged_and_subscription_survives(
+    bus_factory: Callable[..., object],
+) -> None:
+    log = Capture()
+    _, bus = await bus_factory(log)  # type: ignore[misc]
+    delivered: list[bytes] = []
+    second = asyncio.Event()
 
     async def handler(payload: bytes) -> None:
-        if payload == b'"boom"':
+        delivered.append(payload)
+        if payload == b"first":
             raise RuntimeError("boom")
-        after.set_result(payload)
+        second.set()
 
-    await bus.subscribe("test.panic", handler)
-    await fc.deliver("test.panic", json.dumps("boom").encode())
-    await fc.deliver("test.panic", json.dumps("ok").encode())
-    await drain_handlers(bus)
+    await bus.subscribe("errors.core", handler)
+    await bus.publish("errors.core", b"first")
+    await bus.publish("errors.core", b"second")
 
-    # Сбой первого handler'а не помешал доставке второго сообщения.
-    assert after.result() == b'"ok"'
+    await asyncio.wait_for(second.wait(), _WAIT)
+    assert delivered == [b"first", b"second"]
+    entry = log.find("natskit: handler error", level="error")
+    assert entry is not None
+    assert entry.str("subject") == "errors.core"
+    assert entry.str("instance") == "default"
 
 
-async def test_backpressure_caps_concurrency(monkeypatch: pytest.MonkeyPatch) -> None:
-    conn, fc = fake_conn()
-    monkeypatch.setenv("NATS_MAX_IN_FLIGHT", "3")
-    cfg = Config()
-    assert cfg.backpressure.max_in_flight == 3
-    bus = NatsBus(conn, cfg=cfg)
-
-    current = 0
+async def test_backpressure_caps_concurrent_handlers(bus_factory: Callable[..., object]) -> None:
+    _, bus = await bus_factory(None, backpressure={"max_in_flight": 2})  # type: ignore[misc]
+    running = 0
     peak = 0
-    release = asyncio.Event()
-    done = 0
+    done = asyncio.Event()
+    handled = 0
 
     async def handler(_: bytes) -> None:
-        nonlocal current, peak, done
-        current += 1
-        peak = max(peak, current)
-        await release.wait()
-        current -= 1
-        done += 1
+        nonlocal running, peak, handled
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.05)
+        running -= 1
+        handled += 1
+        if handled == 8:
+            done.set()
 
-    await bus.subscribe("test.bp", handler)
-    # Доставляем конкурентно: cb блокируется на sem.acquire() при заполнении —
-    # последовательный await завис бы на 4-й доставке.
-    deliveries = [asyncio.create_task(fc.deliver("test.bp", b"x")) for _ in range(20)]
+    await bus.subscribe("backpressure.core", handler)
+    for _ in range(8):
+        await bus.publish("backpressure.core", b"x")
 
-    # Семафор (=3) держит остальные cb заблокированными на acquire(), пока
-    # release не отпустит первые три, поэтому peak не превышает лимит.
-    await asyncio.sleep(0.05)
-    assert peak <= 3
-    release.set()
-    await asyncio.gather(*deliveries)
-    await drain_handlers(bus)
-    assert done == 20
+    await asyncio.wait_for(done.wait(), _WAIT)
+    assert peak <= 2
 
 
-async def test_publish_injects_trace_headers() -> None:
-    from opentelemetry import trace
-    from opentelemetry.sdk.trace import TracerProvider
+async def test_handler_timeout_cancels_stuck_handler(bus_factory: Callable[..., object]) -> None:
+    log = Capture()
+    _, bus = await bus_factory(log, handler_timeout=0.2)  # type: ignore[misc]
+    cancelled = asyncio.Event()
 
-    trace.set_tracer_provider(TracerProvider())
-    conn, fc = fake_conn()
-    bus = NatsBus(conn)
+    async def handler(_: bytes) -> None:
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
 
-    await bus.publish("test.trace", {"k": "v"})
+    await bus.subscribe("timeout.core", handler)
+    await bus.publish("timeout.core", b"x")
 
-    _, _, headers = fc.published[0]
-    assert "traceparent" in headers
+    await asyncio.wait_for(cancelled.wait(), _WAIT)
+    await asyncio.sleep(0.1)
+    entry = log.find("natskit: handler error", level="error")
+    assert entry is not None
+    assert "handler timeout" in entry.str("err")
 
 
-async def test_subscribe_queue_passes_queue_group() -> None:
-    conn, fc = fake_conn()
-    bus = NatsBus(conn)
-
-    got: asyncio.Future[bytes] = asyncio.get_event_loop().create_future()
+async def test_subscription_unsubscribe_stops_delivery(bus_factory: Callable[..., object]) -> None:
+    _, bus = await bus_factory()  # type: ignore[misc]
+    delivered: list[bytes] = []
+    first = asyncio.Event()
 
     async def handler(payload: bytes) -> None:
-        got.set_result(payload)
+        delivered.append(payload)
+        first.set()
 
-    await bus.subscribe_queue("test.q", "workers", handler)
-    assert fc.queues.get("test.q") == "workers"
+    sub = await bus.subscribe("unsub.core", handler)
+    await bus.publish("unsub.core", b"first")
+    await asyncio.wait_for(first.wait(), _WAIT)
 
-    await fc.deliver("test.q", b"x")
-    await drain_handlers(bus)
-    assert got.result() == b"x"
+    await sub.unsubscribe()
+    await bus.publish("unsub.core", b"second")
+    await asyncio.sleep(0.3)
+
+    assert delivered == [b"first"]
 
 
-async def test_subject_and_headers_in_context() -> None:
-    from pylibinfra.natskit import headers_from_context, subject_from_context
-
-    conn, fc = fake_conn()
-    bus = NatsBus(conn)
-
-    seen: asyncio.Future[tuple[str, dict[str, str]]] = asyncio.get_event_loop().create_future()
+async def test_subscription_drain_waits_for_running_handler(
+    bus_factory: Callable[..., object],
+) -> None:
+    _, bus = await bus_factory()  # type: ignore[misc]
+    started = asyncio.Event()
+    finished = asyncio.Event()
 
     async def handler(_: bytes) -> None:
-        seen.set_result((subject_from_context(), headers_from_context()))
+        started.set()
+        await asyncio.sleep(0.3)
+        finished.set()
 
-    await bus.subscribe("a.b.cmd", handler)
-    await fc.deliver("a.b.cmd", b"{}", {"event-type": "created"})
-    await drain_handlers(bus)
+    sub = await bus.subscribe("drain.core", handler)
+    await bus.publish("drain.core", b"x")
+    await asyncio.wait_for(started.wait(), _WAIT)
 
-    subject, headers = seen.result()
-    assert subject == "a.b.cmd"
-    assert headers.get("event-type") == "created"
-    # Вне обработчика контекст пуст.
-    assert subject_from_context() == ""
-    assert headers_from_context() == {}
+    await sub.drain(timeout=_WAIT)
+
+    assert finished.is_set()
+    # Повторные drain/unsubscribe идемпотентны: транспорт останавливается ровно раз.
+    await sub.drain(timeout=_WAIT)
+    await sub.unsubscribe()
+
+
+async def test_close_waits_for_handler_and_rejects_new_subscriptions(
+    nats_server: NatsFixture,
+) -> None:
+    log = Capture()
+    conn = await new_conn(nats_server.config(), log)
+    bus = NatsBus(conn, nats_server.config(), log)
+    finished = asyncio.Event()
+    started = asyncio.Event()
+
+    async def handler(_: bytes) -> None:
+        started.set()
+        await asyncio.sleep(0.3)
+        finished.set()
+
+    await bus.subscribe("close.core", handler)
+    ready = probe(conn)
+    await ready.run()
+    await bus.publish("close.core", b"x")
+    await asyncio.wait_for(started.wait(), _WAIT)
+
+    await conn.close()
+
+    assert finished.is_set()
+    assert conn.status() == "closed"
+    assert ready.name == "natskit"
+    with pytest.raises(ConnectionClosedError):
+        conn.healthy()
+    with pytest.raises(ClosedError):
+        await bus.subscribe("close.core", handler)
+    # Повторный close идемпотентен.
+    await conn.close()
+
+
+async def test_close_gives_up_on_stuck_handler_after_drain_timeout(
+    nats_server: NatsFixture,
+) -> None:
+    log = Capture()
+    cfg = nats_server.config(drain_timeout=0.3)
+    conn = await new_conn(cfg, log)
+    bus = NatsBus(conn, cfg, log)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def handler(_: bytes) -> None:
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    await bus.subscribe("stuck.core", handler)
+    await bus.publish("stuck.core", b"x")
+    await asyncio.wait_for(started.wait(), _WAIT)
+
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await conn.close()
+    elapsed = loop.time() - start
+
+    assert elapsed < 3.0
+    assert cancelled.is_set()
+    assert log.has("natskit: drain timeout, handlers still in flight", level="warn")
+
+
+async def test_emits_metrics_and_linked_spans(
+    nats_server: NatsFixture,
+    read_metric: Callable[..., float],
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    cfg = nats_server.config()
+    conn = await new_conn(cfg)
+    bus = NatsBus(conn, cfg)
+    done = asyncio.Event()
+
+    async def handler(_: bytes) -> None:
+        done.set()
+
+    try:
+        await bus.subscribe("signals.*", handler)
+        await bus.publish("signals.one", b"x", metric_subject="signals.*")
+        await bus.publish("signals.two", b"y")
+        await asyncio.wait_for(done.wait(), _WAIT)
+        await asyncio.sleep(0.2)
+    finally:
+        await conn.close()
+
+    assert read_metric("nats_messages_published_total", {"status": "ok"}) == 2
+    # Label subject на publish-метриках — только с metric_subject.
+    assert read_metric("nats_messages_published_total", {"subject": "signals.*"}) == 1
+    assert read_metric("nats_publish_duration_seconds") == 2
+    assert (
+        read_metric(
+            "nats_messages_consumed_total",
+            {"subject": "signals.*", "status": "ok", "instance": "default"},
+        )
+        >= 1
+    )
+    assert read_metric("nats_handle_duration_seconds", {"subject": "signals.*"}) >= 1
+    assert read_metric("nats_inflight_messages", {"subject": "signals.*"}) == 0
+
+    spans = {span.name: span for span in span_exporter.get_finished_spans()}
+    producer = spans["natskit.publish signals.*"]
+    consumer = spans["natskit.handle signals.*"]
+    assert producer.attributes is not None
+    assert producer.attributes["messaging.destination.name"] == "signals.one"
+    assert consumer.attributes is not None
+    assert consumer.attributes["messaging.destination.name"] in ("signals.one", "signals.two")
+    # Consumer-спан — child producer'а: trace-context доехал в заголовках сообщения.
+    linked = [
+        span
+        for span in span_exporter.get_finished_spans()
+        if span.name == "natskit.handle signals.*" and span.parent is not None
+    ]
+    assert linked
+    assert linked[0].parent is not None
+    assert linked[0].context is not None
+    assert linked[0].context.trace_id in {
+        span.context.trace_id
+        for span in span_exporter.get_finished_spans()
+        if span.name.startswith("natskit.publish") and span.context is not None
+    }

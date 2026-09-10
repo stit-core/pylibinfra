@@ -1,49 +1,64 @@
-from collections.abc import AsyncIterator, Callable, Coroutine
-from typing import Any
+"""dishka-проводка инстанса шины: `Client`, `Conn`, `Bus` и `StreamBus` под общим lifecycle'ом."""
 
-from dishka import Provider, Scope, provide
+from __future__ import annotations
 
-from pylibinfra.logkit import Logger, nop
+from collections.abc import AsyncIterator
+from typing import Annotated
 
-from .bus import Bus, NatsBus
-from .config import Config
-from .conn import Conn, new_conn
-from .jetstream import StreamBus, new_stream_bus
+from dishka import DEFAULT_COMPONENT, FromComponent, Provider, Scope, provide
+
+from pylibinfra.logkit import Logger
+
+from .bus import Bus
+from .client import Client, new_client
+from .config import DEFAULT_INSTANCE, Config
+from .conn import Conn
+from .errors import ConfigError
+from .jetstream import StreamBus
+from .subjects import valid_instance_name
 
 
-# Provider не provide'ит Config (asymmetry note) и не provide'ит Probe — тип probe
-# `Callable[..., Awaitable[None]]` коллизит с любым другим health-probe. Caller
-# регистрирует probe сам с нужной аннотацией (обычно group="health").
 class NatsProvider(Provider):
+    """Provider инстанса шины; `Config` регистрирует консьюмер (asymmetry note).
+
+    Вторая шина в том же приложении — второй `NatsProvider(name, component=name)` с
+    конфигом `new_config_prefixed(name)` в том же компоненте; `Logger` берётся из
+    дефолтного компонента.
+    """
+
     scope = Scope.APP
 
+    def __init__(self, name: str = DEFAULT_INSTANCE, *, component: str | None = None) -> None:
+        if not name or not valid_instance_name(name):
+            raise ConfigError(
+                f"natskit: invalid config: instance {name!r}: "
+                "allowed characters are letters, digits, '_', '-', '.'"
+            )
+        super().__init__(component=component)
+        self.name = name
+
     @provide
-    async def conn(self, cfg: Config, log: Logger) -> AsyncIterator[Conn]:
-        conn = await new_conn(cfg, log)
+    async def client(
+        self, cfg: Config, log: Annotated[Logger, FromComponent(DEFAULT_COMPONENT)]
+    ) -> AsyncIterator[Client]:
+        """Инстанс шины на всё время жизни контейнера; на выходе — graceful `close`."""
+        client = await new_client(self.name, cfg, log)
         try:
-            yield conn
+            yield client
         finally:
-            await conn.raw.drain()
-
-    @provide(provides=Bus)
-    def bus(self, conn: Conn, cfg: Config, log: Logger) -> Bus:
-        return NatsBus(conn, log, cfg)
+            await client.close()
 
     @provide
-    async def stream_bus(self, conn: Conn, cfg: Config, log: Logger) -> StreamBus:
-        return await new_stream_bus(conn, cfg, log)
+    def conn(self, client: Client) -> Conn:
+        """Соединение инстанса (нужно для `probe`)."""
+        return client.conn
 
+    @provide
+    def bus(self, client: Client) -> Bus:
+        """Core-шина инстанса."""
+        return client.bus
 
-def new_config() -> Config:
-    return Config()
-
-
-def probe(conn: Conn) -> Callable[[], Coroutine[Any, Any, None]]:
-    async def check() -> None:
-        conn.healthy()
-
-    return check
-
-
-def new_bus(conn: Conn, cfg: Config | None = None, log: Logger | None = None) -> Bus:
-    return NatsBus(conn, log or nop(), cfg or Config())
+    @provide
+    def stream_bus(self, client: Client) -> StreamBus:
+        """JetStream-шина инстанса (заглушка при выключенном JetStream)."""
+        return client.stream

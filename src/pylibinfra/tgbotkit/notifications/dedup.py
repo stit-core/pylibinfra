@@ -1,34 +1,40 @@
-"""DeliveryDedup — защита от повторной доставки при at-least-once JetStream
-(redelivery после nak/таймаута ack). Reserve/commit/release по бизнес-ключу
-события в общем redis:
-
-- reserve(key): атомарный SET NX EX reserve_ttl — короткое окно «доставка в
-  процессе». True = ключ захвачен (звонящий доставляет), False = ключ уже занят
-  (другой консьюмер в процессе ИЛИ уже закоммичено → звонящий пропускает).
-- commit(key): после успешной доставки поднимает ключ до длинного окна ttl.
-- release(key): после транзиентного сбоя снимает резервацию, чтобы redelivery
-  (через nak в natskit.JsBus) повторил сразу, не дожидаясь истечения reserve_ttl.
-"""
+"""DeliveryDedup — доставка события в Telegram ровно один раз при at-least-once подписке."""
 
 from __future__ import annotations
 
 import redis.asyncio as redis
 
+from pylibinfra.idkit import new_v7
+from pylibinfra.tgbotkit.reservation import Reservation
+
+KEY_PREFIX = "tg:notify:"
+
 
 class DeliveryDedup:
+    """Резерв бизнес-ключа события в общем Redis: короткое окно на доставку, длинное после.
+
+    JetStream переотправляет сообщение после `NAK` или истёкшего ack, поэтому доставку
+    гейтит `SET NX EX`: `reserve` захватывает ключ на `reserve_ttl` и отдаёт токен
+    владения, `commit` поднимает ключ до `ttl` после успеха, `release` снимает резерв
+    после транзиентного сбоя, чтобы повтор пришёл сразу, а не по истечении окна. Обе
+    операции идут по токену: истёкший резерв, перехваченный соседним воркером, чужим
+    `release` не снимается.
+    """
+
     def __init__(
         self, client: redis.Redis, ttl: float = 86400.0, reserve_ttl: float = 60.0
     ) -> None:
-        self._redis = client
-        self._ttl = max(int(ttl), 1)
-        self._reserve_ttl = max(int(reserve_ttl), 1)
+        self._slots = Reservation(client, KEY_PREFIX, ttl=ttl, reserve_ttl=reserve_ttl)
 
-    async def reserve(self, key: str) -> bool:
-        fresh = await self._redis.set(f"tg:notify:{key}", b"1", nx=True, ex=self._reserve_ttl)
-        return bool(fresh)
+    async def reserve(self, key: str) -> str | None:
+        """Токен владения — доставку выполняет вызывающий; `None` — это дубль."""
+        token = new_v7()
+        return token if await self._slots.reserve(key, token) else None
 
-    async def commit(self, key: str) -> None:
-        await self._redis.set(f"tg:notify:{key}", b"1", ex=self._ttl)
+    async def commit(self, key: str, token: str) -> bool:
+        """Фиксирует доставленное событие на длинное окно; `False` — резерв уже не наш."""
+        return await self._slots.commit(key, token)
 
-    async def release(self, key: str) -> None:
-        await self._redis.delete(f"tg:notify:{key}")
+    async def release(self, key: str, token: str) -> bool:
+        """Снимает свой резерв, разрешая переотправке повторить доставку немедленно."""
+        return await self._slots.release(key, token)

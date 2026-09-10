@@ -1,85 +1,181 @@
-"""Server: собирает FastAPI app, навешивает middleware-цепочку и error-handlers,
-инструментирует OTel'ом, держит uvicorn.Server. start() поднимает сервер,
-stop() корректно гасит с учётом shutdown_timeout.
-"""
+"""Server: сборка FastAPI-приложения с цепочкой кита, синхронный listen и graceful stop."""
 
 from __future__ import annotations
 
 import asyncio
+import math
+import socket
+from collections.abc import Sequence
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from starlette.middleware import Middleware
 
+from pylibinfra import healthkit
 from pylibinfra.logkit import Logger, nop
 
 from .auth import AuthExtractor, AuthMiddleware
 from .config import Config
-from .cors import apply_cors
-from .error import register_error_handlers
-from .health import Probe, register_health
+from .cors import CORSMiddleware
+from .error import HttpkitError, register_error_handlers
+from .health import HEALTH_PATH, READY_PATH, register_health
 from .idempotency import IdempotencyMiddleware, IdempotencyStore
 from .lifespan import Lifespan
 from .maxbody import MaxBodyMiddleware
-from .metrics import HTTPInstruments, new_instruments
+from .metrics import Instruments, MetricsMiddleware, instruments
 from .middleware import (
     AccessLogMiddleware,
-    MetricsMiddleware,
+    OTelMiddleware,
     RecoveryMiddleware,
     RequestIDMiddleware,
 )
 from .ratelimit import RateLimitMiddleware
 from .security import SecurityHeadersMiddleware
 
+DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
 
-def _addr_host_port(addr: str) -> tuple[str, int]:
+Middlewares = tuple[Middleware, ...]
+"""DI-ключ: ASGI-middleware консьюмера; встают в хвост цепочки кита, ближе всего к обработчику."""
+
+SecuritySchemes = dict[str, dict[str, Any]]
+"""`components.securitySchemes` OpenAPI; дефолтных схем кит не выставляет."""
+
+
+class ListenError(HttpkitError):
+    """Порт занят или адрес невалиден — сервер не стартует."""
+
+
+def split_addr(addr: str) -> tuple[str, int]:
+    """Разбирает `host:port` (`:8080`, `127.0.0.1:0`, `[::]:8080`); пустой host — все интерфейсы."""
     host, _, port = addr.rpartition(":")
-    # "0.0.0.0" по умолчанию зеркалит Go-дефолт ":8080" (bind-all) — это сервер.
-    return (host or "0.0.0.0", int(port) if port else 8080)  # noqa: S104
+    host = host.strip("[]")
+    try:
+        number = int(port) if port else 8080
+    except ValueError as exc:
+        raise ListenError(f"httpkit: invalid addr {addr!r}") from exc
+    return (host, number)
+
+
+def bind_socket(host: str, port: int) -> socket.socket:
+    """Создаёт и биндит слушающий сокет; пустой host — dual-stack IPv6+IPv4, как `net.Listen` в Go.
+
+    Без IPv6 в системе bind-all уходит на IPv4. Ошибка bind — `OSError` вызывающему.
+    """
+    if host == "":
+        if socket.has_ipv6:
+            sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+                sock.bind(("::", port))
+                return sock
+            except OSError:
+                sock.close()
+        host = "0.0.0.0"  # noqa: S104 - bind-all: IPv6 в системе нет
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
+def _install_security_schemes(app: FastAPI, schemes: SecuritySchemes) -> None:
+    """Дописывает `components.securitySchemes` в сгенерированную FastAPI схему OpenAPI."""
+    generate = app.openapi
+
+    def openapi() -> dict[str, Any]:
+        schema = generate()
+        components = schema.setdefault("components", {})
+        components.setdefault("securitySchemes", {}).update(schemes)
+        return schema
+
+    app.openapi = openapi  # type: ignore[method-assign]
 
 
 def build_app(
     cfg: Config,
-    log: Logger,
+    log: Logger | None = None,
     *,
-    instruments: HTTPInstruments | None = None,
     store: IdempotencyStore | None = None,
     auth: AuthExtractor | None = None,
-    probes: tuple[Probe, ...] = (),
+    probes: healthkit.Probes = (),
+    middlewares: Sequence[Middleware] = (),
+    security_schemes: SecuritySchemes | None = None,
     lifespan: Lifespan | None = None,
+    instr: Instruments | None = None,
 ) -> FastAPI:
-    instr = instruments if instruments is not None else new_instruments()
-    app = FastAPI(title=cfg.api_title, version=cfg.api_version, lifespan=lifespan)
+    """Собирает FastAPI с цепочкой кита, обработчиками ошибок и `/health` + `/ready`.
 
-    register_error_handlers(app)
-    register_health(app, *probes)
+    Порядок цепочки снаружи внутрь: RequestID, OTel, AccessLog, Metrics, Recovery,
+    SecurityHeaders, CORS, RateLimit, MaxBody, Idempotency, Auth, затем `middlewares`
+    консьюмера — они ближе всего к обработчику.
+    """
+    logger = log if log is not None else nop()
+    instruments_ = instr if instr is not None else instruments()
+    app = FastAPI(
+        title=cfg.api_title,
+        version=cfg.api_version,
+        lifespan=lifespan,
+        docs_url="/docs" if cfg.docs_enabled else None,
+        redoc_url="/redoc" if cfg.docs_enabled else None,
+        openapi_url="/openapi.json" if cfg.docs_enabled else None,
+    )
+    if security_schemes:
+        _install_security_schemes(app, security_schemes)
 
-    # add_middleware кладёт наружу: последний добавленный — самый внешний. Чтобы
-    # порядок выполнения совпал с golibinfra (CORS снаружи, Idempotency внутри),
-    # добавляем от внутреннего к внешнему.
+    register_error_handlers(app, logger)
+    register_health(app, logger, cfg.ready_probe_timeout, probes)
+
+    chain: list[Middleware] = [
+        Middleware(RequestIDMiddleware),
+        Middleware(OTelMiddleware, quiet_paths=cfg.quiet_paths),
+        Middleware(AccessLogMiddleware, log=logger, quiet_paths=cfg.quiet_paths),
+        Middleware(MetricsMiddleware, instr=instruments_),
+        Middleware(RecoveryMiddleware, log=logger, instr=instruments_),
+        Middleware(SecurityHeadersMiddleware, cfg=cfg.security),
+    ]
+    if cfg.cors.origins:
+        chain.append(Middleware(CORSMiddleware, cfg=cfg.cors))
+    if cfg.rate_limit.rps > 0:
+        chain.append(Middleware(RateLimitMiddleware, cfg=cfg.rate_limit, instr=instruments_))
+    if cfg.max_body.max_bytes > 0:
+        chain.append(Middleware(MaxBodyMiddleware, cfg=cfg.max_body, instr=instruments_))
     if store is not None:
-        app.add_middleware(
-            IdempotencyMiddleware, cfg=cfg.idempotency, store=store, instruments=instr
+        chain.append(
+            Middleware(
+                IdempotencyMiddleware,
+                cfg=cfg.idempotency,
+                store=store,
+                instr=instruments_,
+                extractor=auth,
+                log=logger,
+            )
         )
-    app.add_middleware(MetricsMiddleware, instruments=instr)
-    app.add_middleware(AccessLogMiddleware, log=log)
-    app.add_middleware(SecurityHeadersMiddleware, cfg=cfg.security)
-    app.add_middleware(RecoveryMiddleware, log=log, instruments=instr)
-    app.add_middleware(RequestIDMiddleware)
-    app.add_middleware(MaxBodyMiddleware, cfg=cfg.max_body, instruments=instr)
-    app.add_middleware(RateLimitMiddleware, cfg=cfg.rate_limit)
     if auth is not None:
-        app.add_middleware(AuthMiddleware, extractor=auth)
-    apply_cors(app, cfg.cors)
+        chain.append(
+            Middleware(
+                AuthMiddleware,
+                extractor=auth,
+                log=logger,
+                public_paths=(HEALTH_PATH, READY_PATH, *DOCS_PATHS, *cfg.quiet_paths),
+            )
+        )
+    chain.extend(middlewares)
 
-    # FastAPIInstrumentor даёт серверные спаны/трейс-context. instrument_app
-    # идемпотентен по флагу _is_instrumented_by_opentelemetry на app.
-    FastAPIInstrumentor.instrument_app(app)
-
+    # add_middleware кладёт наружу: чтобы порядок выполнения совпал с цепочкой, добавляем с хвоста.
+    for entry in reversed(chain):
+        app.add_middleware(entry.cls, *entry.args, **entry.kwargs)
     return app
 
 
 class Server:
+    """FastAPI-приложение кита плюс uvicorn: `listen` занимает порт, `serve` обслуживает."""
+
     def __init__(
         self,
         cfg: Config,
@@ -87,49 +183,95 @@ class Server:
         *,
         store: IdempotencyStore | None = None,
         auth: AuthExtractor | None = None,
-        probes: tuple[Probe, ...] = (),
-        instruments: HTTPInstruments | None = None,
+        probes: healthkit.Probes = (),
+        middlewares: Sequence[Middleware] = (),
+        security_schemes: SecuritySchemes | None = None,
         lifespan: Lifespan | None = None,
+        instr: Instruments | None = None,
         autostart: bool = True,
     ) -> None:
+        """`autostart=False` оставляет сервер оболочкой над `.app`: `HttpProvider` его не сервит."""
         self._cfg = cfg
         self._log = log if log is not None else nop()
-        # autostart=False оставляет Server лишь оболочкой над .app (consumer сам
-        # решает, как сервить) — start() становится no-op. Webhook-runner так не
-        # делает: он дорегистрирует роуты в .app, затем зовёт start() штатно.
-        self._autostart = autostart
+        self.autostart = autostart
         self.app = build_app(
             cfg,
             self._log,
-            instruments=instruments,
             store=store,
             auth=auth,
             probes=probes,
+            middlewares=middlewares,
+            security_schemes=security_schemes,
             lifespan=lifespan,
+            instr=instr,
         )
-        host, port = _addr_host_port(cfg.addr)
+        self._socket: socket.socket | None = None
+        self._serve_task: asyncio.Task[None] | None = None
+        self._stopped = False
+        # uvicorn принимает только целые секунды: округляем вверх, иначе конфиг вроде
+        # HTTP_SHUTDOWN_TIMEOUT=0.5 усекался бы в 0 — «гасить без ожидания».
         self._uvicorn = uvicorn.Server(
             uvicorn.Config(
                 self.app,
-                host=host,
-                port=port,
-                timeout_keep_alive=int(cfg.idle_timeout),
-                timeout_graceful_shutdown=int(cfg.shutdown_timeout),
+                timeout_keep_alive=math.ceil(cfg.idle_timeout),
+                timeout_graceful_shutdown=math.ceil(cfg.shutdown_timeout),
                 log_config=None,
                 access_log=False,
             )
         )
-        self._serve_task: asyncio.Task[None] | None = None
 
-    async def start(self) -> None:
-        if not self._autostart:
+    def listen(self) -> None:
+        """Занимает порт синхронно и идемпотентно; занятый адрес — `ListenError`, не строка лога."""
+        if self._socket is not None:
             return
-        self._serve_task = asyncio.create_task(self._uvicorn.serve())
+        host, port = split_addr(self._cfg.addr)
+        try:
+            sock = bind_socket(host, port)
+        except OSError as exc:
+            raise ListenError(f"httpkit: listen {self._cfg.addr}: {exc}") from exc
+        sock.listen(2048)
+        sock.set_inheritable(True)
+        self._socket = sock
+
+    def addr(self) -> str:
+        """Фактический `host:port` после `listen` (`[::]:8080` при bind-all); до него — пусто."""
+        if self._socket is None:
+            return ""
+        host, port = self._socket.getsockname()[:2]
+        return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+    async def serve(self) -> None:
+        """Обслуживает соединения до `stop`; при необходимости вызывает `listen`.
+
+        После `stop` не поднимается: остановленный сервер не должен занять порт заново.
+        """
+        if self._stopped:
+            return
+        self.listen()
+        assert self._socket is not None
+        self._serve_task = asyncio.current_task()
+        try:
+            await self._uvicorn.serve(sockets=[self._socket])
+        finally:
+            self._serve_task = None
 
     async def stop(self) -> None:
+        """Просит uvicorn завершиться и ждёт `shutdown_timeout`, затем снимает задачу."""
+        self._stopped = True
         self._uvicorn.should_exit = True
-        if self._serve_task is not None:
-            try:
-                await asyncio.wait_for(self._serve_task, timeout=self._cfg.shutdown_timeout)
-            except TimeoutError:
-                self._serve_task.cancel()
+        task = self._serve_task
+        if task is None or task is asyncio.current_task():
+            self._close_socket()
+            return
+        try:
+            async with asyncio.timeout(self._cfg.shutdown_timeout):
+                await asyncio.shield(task)
+        except TimeoutError:
+            task.cancel()
+        finally:
+            self._close_socket()
+
+    def _close_socket(self) -> None:
+        if self._socket is not None:
+            self._socket.close()
+            self._socket = None

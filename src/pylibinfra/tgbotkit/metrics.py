@@ -1,44 +1,58 @@
-"""TgInstruments — OTel-инструменты апдейта/платежей. Берёт глобальный
-metrics.get_meter("app") (telemetry.init выставляет provider; без telemetry —
-no-op). Имена инфра-метрики (tg_*), не biz_* — как http_requests_total у httpkit.
-"""
+"""Инструменты кита: RED-метрики апдейта, отбраковка апдейтов и исходы платежей."""
 
-from opentelemetry import metrics
-from opentelemetry.metrics import Counter, Histogram, Meter
+from __future__ import annotations
 
-_DURATION_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30]
+from dataclasses import dataclass
+
+from opentelemetry.metrics import Counter, Histogram
+
+from pylibinfra._internal import otelkit
 
 
-class TgInstruments:
-    updates_total: Counter
-    update_duration: Histogram
-    panics_total: Counter
-    deduped_total: Counter
-    payments_total: Counter
+@dataclass(frozen=True, slots=True)
+class Instruments:
+    """Набор инструментов кита; создаётся вместе с объектом, а не на уровне модуля."""
 
-    def __init__(self, meter: Meter) -> None:
-        self.updates_total = meter.create_counter(
+    updates: Counter
+    duration: Histogram
+    panics: Counter
+    deduped: Counter
+    throttled: Counter
+    payments: Counter
+    redis_errors: Counter
+
+
+def new_instruments() -> Instruments:
+    """Собирает инструменты на meter'е `pylibinfra.tgbotkit` (no-op без MeterProvider)."""
+    meter = otelkit.meter("tgbotkit")
+    return Instruments(
+        updates=meter.create_counter(
             "tg_updates_total",
-            description="Total Telegram updates processed, by type and result",
-        )
-        self.update_duration = meter.create_histogram(
+            description="Telegram updates processed, by type and result",
+        ),
+        duration=otelkit.duration_histogram(
+            meter,
             "tg_update_duration_seconds",
-            description="Telegram update processing duration in seconds",
-            explicit_bucket_boundaries_advisory=_DURATION_BUCKETS,
-        )
-        self.panics_total = meter.create_counter(
+            "Telegram update processing duration",
+        ),
+        panics=meter.create_counter(
             "tg_update_panics_total",
-            description="Exceptions recovered in the update handler chain",
-        )
-        self.deduped_total = meter.create_counter(
+            description="Unhandled handler exceptions recovered by the kit",
+        ),
+        deduped=meter.create_counter(
             "tg_updates_deduped_total",
-            description="Updates dropped as duplicates (Telegram at-least-once retries)",
-        )
-        self.payments_total = meter.create_counter(
+            description="Updates dropped as duplicates of an already handled update_id",
+        ),
+        throttled=meter.create_counter(
+            "tg_updates_throttled_total",
+            description="Updates dropped by the per-user rate limit",
+        ),
+        payments=meter.create_counter(
             "tg_payments_total",
-            description="Payment updates outcomes (pre_checkout/paid), by result",
-        )
-
-
-def new_instruments() -> TgInstruments:
-    return TgInstruments(metrics.get_meter("app"))
+            description="Payment outcomes by stage and result",
+        ),
+        redis_errors=meter.create_counter(
+            "tg_redis_errors_total",
+            description="Redis operations the kit degraded open on, by operation",
+        ),
+    )

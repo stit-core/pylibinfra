@@ -1,12 +1,17 @@
-"""pgstore — боевая реализация bruteforcekit.Store поверх pgkit.DB.
+"""pgstore — `bruteforcekit.Guard`/`Cleaner` поверх `pgkit.DB` на таблице
+`bruteforce_attempts`. Эмитит `bruteforce_checks_total{result}`,
+`bruteforce_locks_total`, `bruteforce_cleanup_deleted_total`; `MIGRATIONS` —
+источник схемы для `pgkit.MigrationSources`."""
 
-Счётчики попыток в таблице bruteforce_attempts (миграция бандлится, путь —
-migrations_dir(), применяется через pgkit.migrate_up). locked_until считается в
-SQL (NOW() + lock_duration), истечение блокировки проверяет Guard через Clock.
-"""
+from .migrations import MIGRATIONS
+from .module import BruteforcePgstoreProvider, cleanup_job
+from .store import CLEANUP_BATCH_SIZE, BruteforceError, Store
 
-from .migrations import migrations_dir
-from .module import BruteforcePgstoreProvider
-from .store import PgStore
-
-__all__ = ["BruteforcePgstoreProvider", "PgStore", "migrations_dir"]
+__all__ = [
+    "CLEANUP_BATCH_SIZE",
+    "MIGRATIONS",
+    "BruteforceError",
+    "BruteforcePgstoreProvider",
+    "Store",
+    "cleanup_job",
+]

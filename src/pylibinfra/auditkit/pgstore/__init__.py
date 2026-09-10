@@ -1,14 +1,11 @@
-"""pgstore — backend auditkit.Store поверх pgkit.DB (INSERT INTO audit_log).
+"""pgstore — `auditkit.Logger` поверх `pgkit.DB`: один INSERT в `audit_log`.
 
-migrations_path() отдаёт каталог .sql-схемы для прогона через pgkit.migrate_up.
+Эмитит `audit_log_writes_total{result}` и `audit_log_write_duration_seconds{result}`;
+`MIGRATIONS` — источник схемы для `pgkit.MigrationSources`.
 """
 
-from .migrations import migrations_path
+from .migrations import MIGRATIONS
 from .module import AuditPgstoreProvider
-from .store import PgStore
+from .store import Store
 
-__all__ = [
-    "AuditPgstoreProvider",
-    "PgStore",
-    "migrations_path",
-]
+__all__ = ["MIGRATIONS", "AuditPgstoreProvider", "Store"]

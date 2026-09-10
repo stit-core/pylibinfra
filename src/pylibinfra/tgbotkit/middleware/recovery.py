@@ -1,13 +1,4 @@
-"""RecoveryMiddleware (outer): последний рубеж. Ловит исключения, не обработанные
-dp.errors, считает tg_update_panics_total, логирует и показывает пользователю
-нейтральное сообщение через ErrorUX — и ГЛОТАЕТ: один битый апдейт не должен валить
-бота.
-
-Stale-dialog-исключения aiogram_dialog (UnknownIntent/OutdatedIntent/UnknownState)
-ПРОБРАСЫВАЮТСЯ в dp.errors — там их чинит штатный stack-recovery aiogram_dialog
-(IntentErrorMiddleware._fix_broken_stack) и stale-UX error-handler'ы шаблона; иначе
-юзер с протухшей кнопкой после деплоя залип бы в петле generic-panic до ручного /start.
-"""
+"""RecoveryMiddleware: последний рубеж — необработанное исключение не роняет бота."""
 
 from __future__ import annotations
 
@@ -18,32 +9,44 @@ from aiogram import BaseMiddleware
 from aiogram.types import ErrorEvent, TelegramObject, Update
 from aiogram_dialog.api.exceptions import OutdatedIntent, UnknownIntent, UnknownState
 
-from pylibinfra.logkit import Logger
+from pylibinfra.logkit import Logger, nop
 from pylibinfra.tgbotkit.errorux import ErrorUX
-from pylibinfra.tgbotkit.metrics import TgInstruments
+from pylibinfra.tgbotkit.metrics import Instruments
+
+from .observability import update_type
 
 Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
 
 
 class RecoveryMiddleware(BaseMiddleware):
-    def __init__(self, ux: ErrorUX, instruments: TgInstruments, log: Logger) -> None:
+    """Гасит исключение обработчика: `tg_update_panics_total`, лог и нейтральный ответ.
+
+    Исключения устаревшего диалога (`UnknownIntent`/`OutdatedIntent`/`UnknownState`)
+    пробрасываются в `dp.errors`: там их чинит штатный stack-recovery `aiogram_dialog`,
+    иначе пользователь с протухшей кнопкой залипал бы в петле generic-ответа до `/start`.
+    """
+
+    def __init__(self, ux: ErrorUX, instruments: Instruments, log: Logger | None = None) -> None:
         self._ux = ux
         self._instr = instruments
-        self._log = log
+        self._log = log if log is not None else nop()
 
     async def __call__(self, handler: Handler, event: TelegramObject, data: dict[str, Any]) -> Any:
+        """Отдаёт результат обработчика; на исключении — `None`, апдейт считается закрытым."""
         try:
             return await handler(event, data)
         except (UnknownIntent, OutdatedIntent, UnknownState):
             raise
         except Exception as exc:
-            update_type = str(getattr(event, "event_type", "unknown"))
-            self._instr.panics_total.add(1, {"type": update_type})
-            self._log.error("tgbotkit: recovered update panic", error=repr(exc))
+            self._instr.panics.add(1, {"type": update_type(event)})
+            self._log.error("tgbotkit: update handler panicked", err=repr(exc))
             bot = data.get("bot")
             if isinstance(event, Update) and bot is not None:
-                try:
-                    await self._ux.on_unhandled(ErrorEvent(update=event, exception=exc), bot)
-                except Exception as ux_exc:  # UX best-effort
-                    self._log.error("tgbotkit: error-UX failed", error=repr(ux_exc))
+                await self._notify(ErrorEvent(update=event, exception=exc), bot)
             return None
+
+    async def _notify(self, event: ErrorEvent, bot: Any) -> None:
+        try:
+            await self._ux.on_unhandled(event, bot)
+        except Exception as exc:
+            self._log.error("tgbotkit: error UX failed", err=repr(exc))

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS audit_log_at_idx;

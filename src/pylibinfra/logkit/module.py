@@ -1,31 +1,46 @@
+"""dishka-проводка logkit: `Logger` из `Config` и опциональных redact/OTel-provider'а."""
+
+from __future__ import annotations
+
 from dishka import Provider, Scope, provide
+from opentelemetry._logs import LoggerProvider
 
-from .config import Config
+from .build import new
+from .config import Config, RedactConfig
 from .logger import Logger
-from .redact import RedactConfig
-from .service import ServiceConfig
-from .structlog_impl import configure, new_logger
+from .stdlib import capture_stdlib
+
+# Тип-обёртка вместо optional-инъекции: дефолт кита перекрывает провайдер,
+# зарегистрированный ПОЗЖЕ (последний в контейнере побеждает).
+OptionalRedactConfig = RedactConfig | None
+OptionalLoggerProvider = LoggerProvider | None
 
 
-# Provider не provide'ит Config / ServiceConfig / RedactConfig — caller
-# регистрирует их сам (asymmetry note, см. pgkit/module.py). Дешёвый mode —
-# new_*-фабрики ниже.
+# Provider не provide'ит Config / ServiceConfig (asymmetry note) — caller
+# регистрирует их сам. Дешёвый mode — new_config()/new_service_config().
 class LogkitProvider(Provider):
+    """Provide'ит `Logger`; `RedactConfig` и OTel `LoggerProvider` — опциональные override'ы."""
+
     scope = Scope.APP
 
-    @provide(provides=Logger)
-    def logger(self, cfg: Config, redact_cfg: RedactConfig) -> Logger:
-        configure(cfg, redact_cfg=redact_cfg)
-        return new_logger()
+    @provide
+    def default_redact(self) -> OptionalRedactConfig:
+        """Дефолт опциональной зависимости: redact выключен."""
+        return None
 
+    @provide
+    def default_logger_provider(self) -> OptionalLoggerProvider:
+        """Дефолт опциональной зависимости: OTel-sink не подключается."""
+        return None
 
-def new_config() -> Config:
-    return Config()
-
-
-def new_service_config() -> ServiceConfig:
-    return ServiceConfig()
-
-
-def new_redact_config() -> RedactConfig:
-    return RedactConfig()
+    @provide
+    def logger(
+        self,
+        cfg: Config,
+        redact: OptionalRedactConfig,
+        otel: OptionalLoggerProvider,
+    ) -> Logger:
+        """Собирает `Logger` и уводит в него корневой `logging` (uvicorn/grpc/aiogram)."""
+        log = new(cfg, redact=redact, otel=otel)
+        capture_stdlib(log, cfg)
+        return log

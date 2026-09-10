@@ -1,21 +1,29 @@
-"""bruteforcekit — guard против brute-force на login-эндпойнты.
+"""bruteforcekit — guard против brute-force на auth-эндпойнты.
 
-Считает неудачные попытки per-subject (логин/email) и per-IP, при превышении
-порога (Config.max_failures в окне Config.window) блокирует на
-Config.lock_duration и возвращает LockState. Core (Guard + Store-port) отделён
-от персистентной реализации: боевой PgStore — в подпакете bruteforcekit.pgstore.
-Lockout-истечение вычисляется через clockkit.Clock (тестируемо).
+Считает неудачные попытки по паре `(subject, ip)` и при достижении порога
+блокирует её на `BRUTEFORCE_LOCK_DURATION`. Core (`Guard`, `Cleaner`, `Config`)
+отделён от pgstore, который эмитит `bruteforce_checks_total{result}`,
+`bruteforce_locks_total` и `bruteforce_cleanup_deleted_total`.
 """
 
-from .config import Config
-from .guard import Guard, LockState, Store
-from .module import BruteforceProvider, new_config
+from .config import (
+    FULL_IPV6_PREFIX,
+    MAX_SUBJECT_LEN,
+    Config,
+    ConfigError,
+    InvalidKeyError,
+    new_config,
+)
+from .guard import Cleaner, Guard, LockState
 
 __all__ = [
-    "BruteforceProvider",
+    "FULL_IPV6_PREFIX",
+    "MAX_SUBJECT_LEN",
+    "Cleaner",
     "Config",
+    "ConfigError",
     "Guard",
+    "InvalidKeyError",
     "LockState",
-    "Store",
     "new_config",
 ]

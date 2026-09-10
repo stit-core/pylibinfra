@@ -1,52 +1,120 @@
-"""authnkit — building blocks для аутентификации.
+"""authnkit — кирпичики аутентификации: Argon2id-хэш, HS256-JWT, TOTP, RBAC.
 
-Hasher (Argon2id), JWT sign/verify (HS256), TOTP-генератор (RFC 6238) и
-RBAC-примитивы (Permission, RolePermissions, has). Конкретные auth-flow'ы
-(login, refresh, MFA enrollment) — за consumer'ом, kit предоставляет только
-криптографически-корректные кирпичики. Эмитит jwt_verifications_total{result},
-password_{hash,verify}_duration_seconds, totp_verifications_total{result}.
+Auth-flow'ы (login, refresh, MFA enrollment, хранение секретов) — за
+потребителем. Эмитит `authn_password_{hash,verify}_duration_seconds`,
+`authn_jwt_verifications_total{result}`, `authn_totp_verifications_total{result}`.
 """
 
-from .hasher import Argon2idHasher, Argon2idParams, Hasher
+from .errors import (
+    ConfigError,
+    HashParamsError,
+    InvalidHashError,
+    InvalidSecretError,
+    TokenAudienceError,
+    TokenError,
+    TokenExpiredError,
+    TokenMalformedError,
+    TokenSignatureError,
+    TOTPError,
+    UsedCodeStoreError,
+    WrongTokenTypeError,
+)
+from .hasher import (
+    MAX_COST_KIB_PASSES,
+    MAX_KEY_LEN,
+    MAX_MEMORY_KIB,
+    MAX_SALT_LEN,
+    MAX_THREADS,
+    MAX_TIME,
+    MIN_KEY_LEN,
+    MIN_MEMORY_KIB,
+    MIN_SALT_LEN,
+    MIN_THREADS,
+    MIN_TIME,
+    Argon2idHasher,
+    Argon2idParams,
+    Hasher,
+)
 from .jwt import (
+    ALGORITHM,
+    CLAIM_TOKEN_TYPE,
+    DEFAULT_ACCESS_TTL,
+    DEFAULT_LEEWAY,
+    DEFAULT_REFRESH_TTL,
     HS256JWT,
-    ErrTokenExpired,
-    ErrTokenMalformed,
-    ErrTokenSignature,
+    MIN_SECRET_LEN,
+    TOKEN_TYPE_ACCESS,
+    TOKEN_TYPE_REFRESH,
     JWTConfig,
     JWTParser,
     JWTSigner,
-    TokenError,
 )
-from .module import AuthnProvider, new_argon2id_params, new_jwt_config
-from .permissions import (
-    Permission,
-    PermissionSet,
-    RolePermissions,
-    has,
-    register_role_permissions,
+from .module import (
+    AuthnProvider,
+    OptionalUsedCodeStore,
+    TOTPProvider,
+    new_argon2id_params,
+    new_jwt_config,
+    new_totp_config,
 )
-from .totp import TOTPGenerator
+from .permissions import Permission, Registry
+from .totp import MAX_TOTP_SKEW, TOTP, TOTP_DIGITS, TOTP_PERIOD, TOTPConfig
+from .usedcode import CacheUsedCodeStore, MemoryUsedCodeStore, UsedCodeCache, UsedCodeStore
 
 __all__ = [
+    "ALGORITHM",
+    "CLAIM_TOKEN_TYPE",
+    "DEFAULT_ACCESS_TTL",
+    "DEFAULT_LEEWAY",
+    "DEFAULT_REFRESH_TTL",
     "HS256JWT",
+    "MAX_COST_KIB_PASSES",
+    "MAX_KEY_LEN",
+    "MAX_MEMORY_KIB",
+    "MAX_SALT_LEN",
+    "MAX_THREADS",
+    "MAX_TIME",
+    "MAX_TOTP_SKEW",
+    "MIN_KEY_LEN",
+    "MIN_MEMORY_KIB",
+    "MIN_SALT_LEN",
+    "MIN_SECRET_LEN",
+    "MIN_THREADS",
+    "MIN_TIME",
+    "TOKEN_TYPE_ACCESS",
+    "TOKEN_TYPE_REFRESH",
+    "TOTP",
+    "TOTP_DIGITS",
+    "TOTP_PERIOD",
     "Argon2idHasher",
     "Argon2idParams",
     "AuthnProvider",
-    "ErrTokenExpired",
-    "ErrTokenMalformed",
-    "ErrTokenSignature",
+    "CacheUsedCodeStore",
+    "ConfigError",
+    "HashParamsError",
     "Hasher",
+    "InvalidHashError",
+    "InvalidSecretError",
     "JWTConfig",
     "JWTParser",
     "JWTSigner",
+    "MemoryUsedCodeStore",
+    "OptionalUsedCodeStore",
     "Permission",
-    "PermissionSet",
-    "RolePermissions",
-    "TOTPGenerator",
+    "Registry",
+    "TOTPConfig",
+    "TOTPError",
+    "TOTPProvider",
+    "TokenAudienceError",
     "TokenError",
-    "has",
+    "TokenExpiredError",
+    "TokenMalformedError",
+    "TokenSignatureError",
+    "UsedCodeCache",
+    "UsedCodeStore",
+    "UsedCodeStoreError",
+    "WrongTokenTypeError",
     "new_argon2id_params",
     "new_jwt_config",
-    "register_role_permissions",
+    "new_totp_config",
 ]

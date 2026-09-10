@@ -1,31 +1,39 @@
 # Вклад в pylibinfra
 
 Это набор инфраструктурных Python-библиотек («кит'ов») для сервисов stit —
-идейный аналог `golibinfra`. Вклад полезен, когда он делает kit'ы чище, надёжнее
-или удобнее для консьюмера — otel-инструментация по умолчанию, минимум зависимостей,
-никакой продуктовой специфики.
+структурный аналог `golibinfra`. Вклад полезен, когда он делает kit'ы чище,
+надёжнее или удобнее для консьюмера — observability по умолчанию, минимум
+зависимостей, никакой продуктовой специфики.
 
 ## С чего начать
 
-- Прочитай `README.md` (использование, наблюдаемость, стабильность API,
+- Прочитай `README.md` (использование, observability, стабильность API,
   версионирование) и `CLAUDE.md` (карта пакетов, инварианты).
 - Каждый kit самодостаточен: подключается независимо, экспортирует `Provider` для
   dishka-проводки. Чтобы понять стиль — посмотри соседний kit рядом с тем, что правишь.
+- У каждого кита — свой `README.md` рядом с кодом (`src/pylibinfra/<kit>/README.md`:
+  назначение, быстрый старт, конфиг, observability, API, инварианты); у сложных китов
+  сверх него каталог `docs/`. Это первый и основной источник правды по киту.
 
 ## Принципы
 
 - **Никакой продуктовой специфики.** Если файл знает про конкретные роли, домены,
   имена сервисов — он не здесь, а в сервис-репо. pylibinfra — общая lib.
-- **Observability opt-in.** Новый код эмитит метрики/спаны через otel-python API
-  (глобальный provider; no-op без него), не хардкодит resource attrs — их задаёт
-  OTel-SDK консьюмера.
+- **Observability by default.** Новый код эмитит метрики/спаны через
+  `pylibinfra._internal.otelkit` (глобальные провайдеры OTel, no-op без SDK у
+  потребителя); resource attrs и экспорт настраивает потребитель.
 - **Минимум зависимостей.** Перед новым import проверь stdlib + уже подключённые
   deps. Каждая новая зависимость в `pyproject.toml` обсуждается отдельно.
 - **dishka-first.** Каждый kit отдаёт `Provider`; консьюмер собирает контейнер из
-  них. Прямой `New*()`/фабрики допустимы, но менее идиоматичны.
-- **pydantic-settings Config — часть public API.** Имена полей и их env-alias'ы
-  (`README.md § Стабильность API`) менять = breaking change, идёт мажорным апгрейдом.
-- **async-first.** Весь I/O — asyncio. Проброс tx/conn — через `contextvars`.
+  них. `Config` провайдит caller (`<kit>.new_config()` или App-Provider); у конфига
+  fail-fast валидация с `<kit>.ConfigError` — невалидный ENV валит старт, а не первый
+  запрос.
+- **Docstring на каждом экспорте** — одна строка, по делу (ruff `D100–D106` в гейте).
+  Тексты ошибок и логов — английские, с префиксом кита.
+- **`validation_alias` конфигов — часть public API.** Имена полей/alias'ов публичных
+  конфиг-структур менять = breaking change; он допустим в minor-релизе, но обязан
+  быть помечен `!` в коммите и описан в аннотации тега (см. `README.md § Версионирование`).
+- **async-first.** Весь I/O — asyncio. Проброс tx/request-id — через `contextvars`.
 - **Forward-only документация.** Текст описывает текущее состояние, без «было/стало» —
   история живёт в `git log`.
 
@@ -41,23 +49,34 @@
 ## Перед PR
 
 ```bash
-uv run ruff format --check .       # формат
-uv run ruff check .                # lint
-uv run mypy src                    # типы
-uv run pytest                      # тесты (нужен Docker для integration)
+make sync         # один раз: uv sync --frozen
+make hooks        # один раз: core.hooksPath=.githooks, pre-push гоняет make check
+make check        # fmt-check + lint + typecheck + unit + envdoc-check
+make test-full    # + testcontainers (нужен Docker) — для китов с БД/шиной/кэшем/хранилищем
 ```
 
-Зелёные все — gate пройден.
+Зелёный `make check` — gate пройден. Что именно он запускает — в `Makefile`
+(цели можно вызывать по отдельности: `make lint`, `make test`, …); есть ещё
+`make coverage` и `make vuln`.
 
-- Новый kit → строка в `README.md § Пакеты` обязательна.
-- Тронул эмитимые метрики/labels/span-attrs → обнови `README.md § Что эмитит каждый пакет`.
+- Новый kit → собственный `README.md` кита (+ `docs/` у сложного), строка-индекс
+  в `README.md § Пакеты` и, если нужны test-хелперы, `testkit/<name>test`.
+- Тронул конфиг / эмитимые метрики / labels / span-attrs → обнови `README.md`
+  (+ `docs/`) соответствующего кита, а endpoint-переменную — ещё и в
+  `README.md § Per-concern endpoints`; `make envdoc-check` сверит обе стороны.
+- Багфикс → регрессионный тест в том же PR; новый `Provider` → тест сборки
+  контейнера.
 - **Conventional Commits** — `<type>(<scope>)?: <subject>`, subject ≤72. Типы:
-  `feat`, `fix`, `refactor`, `docs`, `test`, `chore`. Пример: `feat(httpkit): add CSP header`.
+  `feat`, `fix`, `refactor`, `docs`, `test`, `chore`; breaking — `!` и футер
+  `BREAKING CHANGE:`. Пример: `feat(httpkit)!: Server принимает middlewares`.
 
 ## Стиль
 
-Спокойно и по делу, без хайпа. Комментарии в коде — только когда WHY неочевидно,
-не пересказ кода. Названия и формулировки — как у соседних пакетов.
+Спокойно и по делу, без хайпа. Docstring на публичных идентификаторах —
+обязателен. Комментарии **внутри** функций — только когда WHY неочевидно, не
+пересказ кода. Названия и формулировки — как у соседних пакетов: DI-группа —
+кортеж-тип `<kit>.<Things>`, проба — `probe(...)`, test-хелперы —
+`testkit/<name>test`.
 
 ## Лицензия
 

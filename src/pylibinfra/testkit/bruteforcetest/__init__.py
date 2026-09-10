@@ -1,6 +1,9 @@
-"""bruteforcetest — in-memory реализации bruteforcekit.Store для тестов
-(Permissive/Locked/Recorder), оборачиваемые в Guard."""
+"""bruteforcetest — фейки `bruteforcekit.Guard` для тестов сценариев логина без Postgres.
 
-from .store import Locked, Permissive, Recorder
+Все четыре отвергают невалидный ключ так же, как pgstore: проводка, отдающая
+guard'у пустой `ip`, падает в unit-тесте, а не на проде.
+"""
 
-__all__ = ["Locked", "Permissive", "Recorder"]
+from .guard import Attempt, Counting, Locked, Permissive, Recorder
+
+__all__ = ["Attempt", "Counting", "Locked", "Permissive", "Recorder"]

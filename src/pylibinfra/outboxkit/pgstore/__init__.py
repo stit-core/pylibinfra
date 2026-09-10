@@ -1,41 +1,53 @@
-"""pgstore — боевой Postgres-store outboxkit.Repository поверх pgkit.DB.
+"""pgstore — Postgres-реализация `outboxkit.Repository`: партиционированная по месяцам таблица,
+тик воркера под `FOR UPDATE`, backoff в колонке, backlog и retention через DETACH+DROP.
 
-SQL зеркалит Go-аналог 1:1. Таблица outbox партиционирована по месяцам (RANGE
-created_at): миграция 0001 создаёт текущий месяц + 3 вперёд, 0002 добавляет
-poison-колонки (attempts/last_error/dead_at) + partial-индекс с `dead_at IS NULL`.
-partition-keeper держит партиции впереди календаря, retention-keeper дропает
-старые (OUTBOX_RETENTION_MONTHS). PgStore реализует и outboxkit.BacklogReporter.
+Конфиг — `OUTBOX_RETENTION_MONTHS`, `OUTBOX_REQUIRE_TX`. Требует Postgres 14+.
 """
 
-from .migrations import migrations_path
+from .migrations import MIGRATIONS, partitions_ddl, table_migrations
 from .module import (
     Config,
+    OutboxPgstoreFactoryProvider,
     OutboxPgstoreProvider,
     new_config,
-    partition_keeper_job,
-    retention_keeper_job,
+    new_repository_factory,
+    new_store,
 )
 from .partitions import (
+    PendingRowsError,
     drop_old_partitions,
     ensure_partitions,
+    partition_month,
     partition_sql,
     schema_sql,
 )
-from .store import DEFAULT_TABLE, PgStore, new_store, new_store_for
+from .store import (
+    DEFAULT_TABLE,
+    KEEPER_INTERVAL,
+    Store,
+    partition_keeper_job,
+    retention_keeper_job,
+)
 
 __all__ = [
     "DEFAULT_TABLE",
+    "KEEPER_INTERVAL",
+    "MIGRATIONS",
     "Config",
+    "OutboxPgstoreFactoryProvider",
     "OutboxPgstoreProvider",
-    "PgStore",
+    "PendingRowsError",
+    "Store",
     "drop_old_partitions",
     "ensure_partitions",
-    "migrations_path",
     "new_config",
+    "new_repository_factory",
     "new_store",
-    "new_store_for",
     "partition_keeper_job",
+    "partition_month",
     "partition_sql",
+    "partitions_ddl",
     "retention_keeper_job",
     "schema_sql",
+    "table_migrations",
 ]

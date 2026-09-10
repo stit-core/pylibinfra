@@ -1,12 +1,10 @@
-"""Путь к каталогу .sql-миграций audit_log для pgkit.migrate_up.
+"""MIGRATIONS — источник миграций кита для `pgkit.MigrationSources`."""
 
-Аналог Go MigrationsFS: консьюмер прогоняет их через pgkit migrate-runner,
-передав migrations_path() в MigrateConfig.path (yoyo читает каталог .sql).
-"""
+from __future__ import annotations
 
 from importlib.resources import files
 from pathlib import Path
 
+from pylibinfra.pgkit import Source
 
-def migrations_path() -> str:
-    return str(Path(str(files(__package__))) / "migrations")
+MIGRATIONS = Source(name="auditkit", path=str(Path(str(files(__package__))) / "migrations"))

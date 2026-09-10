@@ -1,47 +1,79 @@
-"""bizmetric — конвенциональный helper для бизнес-метрик.
+"""Фабрики бизнес-метрик и валидатор имени `biz_<domain>_<name>`."""
 
-Все имена форсятся в форму ``biz_<domain>_<name>_<suffix>``:
-  - counter   → суффикс ``_total``
-  - histogram → суффикс ``_seconds``
-  - gauge     → без суффикса
-
-Метрики эмитятся через vendor-neutral OTel-meter (``metrics.get_meter("app")``);
-без выставленного MeterProvider'а — no-op.
-
-Префикс ``biz_`` группирует бизнес-метрики под общий автодискавер
-``{__name__=~"biz_.*"}``. Невалидные domain/name (не snake_case ASCII) →
-ValueError (аналог panic в golibinfra).
-"""
+from __future__ import annotations
 
 import re
 
 from opentelemetry.metrics import Counter, Histogram, Meter, UpDownCounter
 
-_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+# Публичного алиаса у sync-gauge в otel-python нет — тип экспортируется как _Gauge.
+from opentelemetry.metrics import _Gauge as Gauge
+
+from pylibinfra._internal import otelkit
+
+UNIT_EVENT = "{event}"
+UNIT_ITEM = "{item}"
+UNIT_SECONDS = "s"
+
+# \Z, а не $: `$` в Python совпадает и перед завершающим \n, и имя вроде "auth\n"
+# прошло бы валидацию, сломав экспозицию метрики.
+_NAME_RE = re.compile(r"\A[a-z][a-z0-9_]*\Z")
+_PREFIX = "biz_"
+# `_total`/`_seconds` подставляет сам helper, `_count`/`_sum`/`_bucket`/`_created` —
+# Prometheus-трансляция гистограмм и счётчиков: в domain/name они дают двойной
+# суффикс и коллизию с чужой серией.
+_RESERVED_SUFFIXES = ("_total", "_seconds", "_count", "_sum", "_bucket", "_created")
 
 
-def counter(meter: Meter, domain: str, name: str, *, description: str = "") -> Counter:
-    full = must_name(domain, name) + "_total"
-    return meter.create_counter(full, description=description)
+class InvalidNameError(ValueError):
+    """`domain`/`name` вне конвенции: не snake_case ASCII, префикс `biz_` или занятый суффикс."""
+
+
+def counter(
+    meter: Meter, domain: str, name: str, *, description: str = "", unit: str = UNIT_EVENT
+) -> Counter:
+    """Монотонный счётчик событий `biz_<domain>_<name>_total`; невалидное имя — InvalidNameError."""
+    return meter.create_counter(
+        must_name(domain, name) + "_total", unit=unit, description=description
+    )
 
 
 def histogram(meter: Meter, domain: str, name: str, *, description: str = "") -> Histogram:
-    full = must_name(domain, name) + "_seconds"
-    return meter.create_histogram(full, unit="s", description=description)
+    """Гистограмма длительности `biz_<domain>_<name>_seconds` с общими бакетами репозитория."""
+    return otelkit.duration_histogram(meter, must_name(domain, name) + "_seconds", description)
 
 
-def gauge(meter: Meter, domain: str, name: str, *, description: str = "") -> UpDownCounter:
-    """Int64UpDownCounter как способ выразить gauge для non-observable значений.
+def gauge(
+    meter: Meter, domain: str, name: str, *, description: str = "", unit: str = UNIT_ITEM
+) -> Gauge:
+    """Gauge `biz_<domain>_<name>`: `set` пишет текущее значение величины."""
+    return meter.create_gauge(must_name(domain, name), unit=unit, description=description)
 
-    Для observable-источников используйте meter.create_observable_gauge напрямую
-    и валидируйте имя через must_name.
-    """
-    return meter.create_up_down_counter(must_name(domain, name), description=description)
+
+def up_down_counter(
+    meter: Meter, domain: str, name: str, *, description: str = "", unit: str = UNIT_ITEM
+) -> UpDownCounter:
+    """Счётчик с дельтами `biz_<domain>_<name>`: `add(+1)`/`add(-1)` вокруг текущего значения."""
+    return meter.create_up_down_counter(must_name(domain, name), unit=unit, description=description)
 
 
 def must_name(domain: str, name: str) -> str:
-    if not _NAME_RE.match(domain):
-        raise ValueError(f"bizmetric: invalid domain {domain!r} (need ^[a-z][a-z0-9_]*$)")
-    if not _NAME_RE.match(name):
-        raise ValueError(f"bizmetric: invalid name {name!r} (need ^[a-z][a-z0-9_]*$)")
-    return f"biz_{domain}_{name}"
+    """Собирает и валидирует имя `biz_<domain>_<name>` — для инструментов, заводимых вручную."""
+    _validate("domain", domain)
+    _validate("name", name)
+    return f"{_PREFIX}{domain}_{name}"
+
+
+def _validate(what: str, value: str) -> None:
+    if not _NAME_RE.match(value):
+        raise InvalidNameError(f"bizmetric: invalid {what} {value!r} (need ^[a-z][a-z0-9_]*$)")
+    if value.startswith(_PREFIX):
+        raise InvalidNameError(
+            f"bizmetric: invalid {what} {value!r}: prefix {_PREFIX} is added by the helper"
+        )
+    for suffix in _RESERVED_SUFFIXES:
+        if value.endswith(suffix):
+            raise InvalidNameError(
+                f"bizmetric: invalid {what} {value!r}: suffix {suffix} is reserved "
+                f"(added by the helper or by Prometheus translation)"
+            )

@@ -1,11 +1,12 @@
-"""i18n-подсистема: I18NFormat-виджет + middleware-проводка; движок (fluent) за
-Protocol Translator, выбор локали — за Protocol LocaleResolver. Контент (.ftl) и
-фича смены языка — в шаблоне.
+"""i18n-подсистема: виджет `I18NFormat`, выбор локали и движок переводов за портами.
+
+Контент (`.ftl`) и фича смены языка — в сервисе; кит ничего не эмитит.
 """
 
 from .format import I18N_FORMAT_KEY, I18NFormat
-from .middleware import I18nMiddleware, install_i18n
+from .middleware import LOCALE_KEY, I18nMiddleware, install_i18n
 from .resolver import (
+    KEY_PREFIX,
     ChainResolver,
     FromCachePref,
     FromUserLanguage,
@@ -16,6 +17,8 @@ from .translator import FluentTranslator, FormatFunc, Translator, build_translat
 
 __all__ = [
     "I18N_FORMAT_KEY",
+    "KEY_PREFIX",
+    "LOCALE_KEY",
     "ChainResolver",
     "FluentTranslator",
     "FormatFunc",

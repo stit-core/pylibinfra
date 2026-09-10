@@ -1,8 +1,12 @@
-"""handlertest — тестовое FastAPI-приложение + httpx ASGI-клиент (без сети) и
-ассерт-хелперы по APIError/JSON-ответу для тестов httpkit-консьюмера."""
+"""handlertest — тестовое FastAPI-приложение поверх ASGI-транспорта и ассерты по ответу.
+
+Хелперы для тестов httpkit-консьюмера: `new_app` + `new_client` (запрос без сети),
+`decode_api_error`/`assert_api_error` понимают и problem+json httpkit, и ошибки валидации.
+"""
 
 from .client import (
     APIError,
+    APIErrorLocation,
     assert_api_error,
     assert_json,
     assert_status,
@@ -13,6 +17,7 @@ from .client import (
 
 __all__ = [
     "APIError",
+    "APIErrorLocation",
     "assert_api_error",
     "assert_json",
     "assert_status",

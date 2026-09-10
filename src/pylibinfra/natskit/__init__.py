@@ -1,45 +1,90 @@
-"""natskit — pub/sub поверх NATS: Bus (subscribe/subscribe_queue), типизированные
-publish_json/subscribe_json/subscribe_queue_json, опц. JetStream (StreamBus:
-батч-async публикация + дедуп по Nats-Msg-Id; poison-обработка consumer'а —
-max_deliver→DLQ/term, NAK с backoff), panic-recovery в подписчиках и backpressure
-через asyncio.Semaphore (NATS_MAX_IN_FLIGHT).
+"""natskit — pub/sub поверх NATS: `Bus` (Core, fire-and-forget) и `StreamBus` (JetStream,
+at-least-once с дедупом, DLQ и NAK-backoff), backpressure, graceful `close`, health-проба.
 
-Subject и headers входящего сообщения доступны handler'у через
-subject_from_context()/headers_from_context(). W3C trace-context инжектится в
-nats-headers, чтобы consumer-span был child'ом producer-span'а. Эмитит
-nats_messages_{published,consumed}_total (consumed status: ok|handler_error|panic|
-dead), nats_{publish,handle}_duration_seconds, nats_inflight_messages.
+Эмитит `nats_messages_{published,consumed}_total`, `nats_{publish,handle}_duration_seconds`,
+`nats_inflight_messages` и спаны `natskit.publish`/`natskit.handle` (trace-propagation
+через заголовки сообщения). Конфиг и полный список сигналов — `README.md` кита.
 """
 
 from .bus import (
     Bus,
-    Handler,
     NatsBus,
+    new_bus,
     publish_json,
     subscribe_json,
     subscribe_queue_json,
 )
-from .config import BackpressureConfig, Config, JetStreamConfig
+from .client import Client, new_client, probe
+from .config import (
+    DEFAULT_INSTANCE,
+    BackpressureConfig,
+    Config,
+    JetStreamConfig,
+    config_without_env,
+    env_prefix,
+    new_config,
+    new_config_prefixed,
+    redact_url,
+)
 from .conn import Conn, new_conn
-from .context import headers_from_context, subject_from_context
+from .context import headers_from_context, message_context, subject_from_context
+from .errors import (
+    ClosedError,
+    ConfigError,
+    ConnectionClosedError,
+    JetStreamDisabledError,
+    NatskitError,
+    PublishError,
+    StreamError,
+    SubscribeError,
+    TerminalError,
+    is_terminal,
+)
 from .instrumentation import NatsInstruments
 from .jetstream import (
+    HEADER_DLQ_CONSUMER,
+    HEADER_DLQ_DELIVERIES,
+    HEADER_DLQ_ERROR,
+    HEADER_DLQ_INSTANCE,
+    HEADER_DLQ_MSG_ID,
+    HEADER_DLQ_ORIGIN,
+    HEADER_DLQ_REASON,
+    HEADER_DLQ_STREAM,
+    REASON_MAX_DELIVER,
+    REASON_TERMINAL,
     DisabledStreamBus,
-    JetStreamDisabledError,
     JsBus,
     StreamBus,
-    StreamMsg,
     new_stream_bus,
     publish_stream_json,
     subscribe_stream_json,
 )
-from .module import NatsProvider, new_bus, new_config, probe
+from .module import NatsProvider
+from .publish import MSG_ID_HEADER, PublishSpec, StreamMsg, new_publish_spec
+from .subjects import subject_matches
+from .subscription import Handler, Subscription
 
 __all__ = [
+    "DEFAULT_INSTANCE",
+    "HEADER_DLQ_CONSUMER",
+    "HEADER_DLQ_DELIVERIES",
+    "HEADER_DLQ_ERROR",
+    "HEADER_DLQ_INSTANCE",
+    "HEADER_DLQ_MSG_ID",
+    "HEADER_DLQ_ORIGIN",
+    "HEADER_DLQ_REASON",
+    "HEADER_DLQ_STREAM",
+    "MSG_ID_HEADER",
+    "REASON_MAX_DELIVER",
+    "REASON_TERMINAL",
     "BackpressureConfig",
     "Bus",
+    "Client",
+    "ClosedError",
     "Config",
+    "ConfigError",
     "Conn",
+    "ConnectionClosedError",
     "DisabledStreamBus",
     "Handler",
     "JetStreamConfig",
@@ -48,17 +93,33 @@ __all__ = [
     "NatsBus",
     "NatsInstruments",
     "NatsProvider",
+    "NatskitError",
+    "PublishError",
+    "PublishSpec",
     "StreamBus",
+    "StreamError",
     "StreamMsg",
+    "SubscribeError",
+    "Subscription",
+    "TerminalError",
+    "config_without_env",
+    "env_prefix",
     "headers_from_context",
+    "is_terminal",
+    "message_context",
     "new_bus",
+    "new_client",
     "new_config",
+    "new_config_prefixed",
     "new_conn",
+    "new_publish_spec",
     "new_stream_bus",
     "probe",
     "publish_json",
     "publish_stream_json",
+    "redact_url",
     "subject_from_context",
+    "subject_matches",
     "subscribe_json",
     "subscribe_queue_json",
     "subscribe_stream_json",

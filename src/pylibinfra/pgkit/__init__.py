@@ -1,50 +1,111 @@
-"""pgkit — DB-фасад поверх asyncpg: пул, Transactor (contextvars), маппинг
-pg-ошибок, migrate-runner (yoyo), health-probe, read-replica, db_pool_* метрики."""
+"""pgkit — фасад поверх asyncpg: пул, `DB`, `Transactor` через contextvars,
+migrate-runner (yoyo, advisory-lock), предикаты pg-ошибок, health-пробы и
+read-replica. Эмитит метрики `pg_pool_*{role}` и per-query спаны otel-asyncpg."""
 
 from .db import DB
+from .dsn import redact_dsn
 from .errors import (
+    ConfigError,
+    ConnectError,
+    InvalidUUIDError,
+    MigrateError,
+    PgkitError,
+    TransactionError,
     is_check_violation,
     is_foreign_key_violation,
+    is_lock_not_available,
     is_no_rows,
     is_not_null_violation,
+    is_query_canceled,
     is_retryable,
     is_unique_violation,
 )
-from .metrics import instrument_pool
-from .migrate import MigrateConfig, migrate_up
-from .module import PgProvider, new_pool_config, new_replica_config
-from .pool import PoolConfig, new_pool
-from .probe import DBProbe, db_probe
-from .replica import ReadWriteDB, ReplicaConfig
-from .transactor import Executor, PoolTransactor, Transactor, conn, in_tx
-from .types import Connection, Pool, Record
+from .metrics import ROLE_PRIMARY, ROLE_REPLICA, PoolInstrumentation, instrument_pool
+from .migrate import (
+    AppSourceName,
+    Migrated,
+    MigrateRunnerConfig,
+    MigrationSources,
+    Source,
+    migrate_down,
+    migrate_up,
+    migrate_up_all,
+    migrate_version,
+    new_migrate_runner_config,
+    startup_sources,
+)
+from .module import OptionalReplicaConfig, PgMigrateProvider, PgProvider
+from .pool import PoolConfig, new_pool, new_pool_config
+from .probe import probe, replica_probe
+from .replica import ReadWriteDB, ReplicaConfig, new_replica_config
+from .transactor import (
+    Executor,
+    Isolation,
+    PoolTransactor,
+    Transactor,
+    TxOptions,
+    conn,
+    in_tx,
+    reset_test_tx,
+    with_test_tx,
+)
+from .types import Connection, Pool, Record, parse_uuid, unmarshal_jsonb
 
 __all__ = [
     "DB",
+    "ROLE_PRIMARY",
+    "ROLE_REPLICA",
+    "AppSourceName",
+    "ConfigError",
+    "ConnectError",
     "Connection",
-    "DBProbe",
     "Executor",
-    "MigrateConfig",
+    "InvalidUUIDError",
+    "Isolation",
+    "MigrateError",
+    "MigrateRunnerConfig",
+    "Migrated",
+    "MigrationSources",
+    "OptionalReplicaConfig",
+    "PgMigrateProvider",
     "PgProvider",
+    "PgkitError",
     "Pool",
     "PoolConfig",
+    "PoolInstrumentation",
     "PoolTransactor",
     "ReadWriteDB",
     "Record",
     "ReplicaConfig",
+    "Source",
+    "TransactionError",
     "Transactor",
+    "TxOptions",
     "conn",
-    "db_probe",
     "in_tx",
     "instrument_pool",
     "is_check_violation",
     "is_foreign_key_violation",
+    "is_lock_not_available",
     "is_no_rows",
     "is_not_null_violation",
+    "is_query_canceled",
     "is_retryable",
     "is_unique_violation",
+    "migrate_down",
     "migrate_up",
+    "migrate_up_all",
+    "migrate_version",
+    "new_migrate_runner_config",
     "new_pool",
     "new_pool_config",
     "new_replica_config",
+    "parse_uuid",
+    "probe",
+    "redact_dsn",
+    "replica_probe",
+    "reset_test_tx",
+    "startup_sources",
+    "unmarshal_jsonb",
+    "with_test_tx",
 ]

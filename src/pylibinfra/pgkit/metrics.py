@@ -1,63 +1,90 @@
-"""instrument_pool — ObservableGauge'и db_pool_* поверх asyncpg-пула.
+"""instrument_pool — метрики `pg_pool_*{role}` поверх asyncpg-пула.
 
-Эмитируемые метрики:
-
-    db_pool_acquired_conns  — занятые соединения (size − idle)
-    db_pool_idle_conns      — простаивающие
-    db_pool_total_conns     — всего открытых
-    db_pool_max_conns       — лимит
-    db_pool_min_conns       — нижняя граница пула
-
-asyncpg не отдаёт cumulative acquire-counters (в отличие от pgx), поэтому
-counter-метрики из golibinfra здесь не воспроизводимы — только pool-state
-gauges. Все метрики attribute-less per-pool.
+Пулы держатся в реестре по `role`, а инструменты создаются один раз на Meter:
+OTel-python молча игнорирует повторное создание инструмента с тем же именем, и
+второй пул (реплика) иначе остался бы без наблюдения.
 """
 
-from collections.abc import Iterable
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable
 
 from opentelemetry.metrics import CallbackOptions, Meter, Observation
 
+from pylibinfra._internal import otelkit
+
 from .types import Pool
 
+ROLE_PRIMARY = "primary"
+ROLE_REPLICA = "replica"
 
-def instrument_pool(pool: Pool, meter: Meter) -> None:
-    def _acquired(_: CallbackOptions) -> Iterable[Observation]:
-        yield Observation(pool.get_size() - pool.get_idle_size())
+# role → пул под наблюдением; несколько пулов с одним role в одном процессе
+# сливаются в одну серию — давай им разные role.
+_pools: dict[str, Pool] = {}
+_meter: Meter | None = None
 
-    def _idle(_: CallbackOptions) -> Iterable[Observation]:
-        yield Observation(pool.get_idle_size())
 
-    def _total(_: CallbackOptions) -> Iterable[Observation]:
-        yield Observation(pool.get_size())
+class PoolInstrumentation:
+    """Регистрация пула в метриках `pg_pool_*`; `unregister` снимает его с наблюдения."""
 
-    def _max(_: CallbackOptions) -> Iterable[Observation]:
-        yield Observation(pool.get_max_size())
+    def __init__(self, role: str, pool: Pool) -> None:
+        self.role = role
+        self._pool = pool
 
-    def _min(_: CallbackOptions) -> Iterable[Observation]:
-        yield Observation(pool.get_min_size())
+    def unregister(self) -> None:
+        """Убирает пул из реестра — после закрытия пула его статистику читать нельзя.
 
-    meter.create_observable_gauge(
-        "db_pool_acquired_conns",
-        callbacks=[_acquired],
-        description="Connections currently acquired from pool",
+        Снимается только свой пул: если тот же `role` успел занять другой пул,
+        его регистрация переживает `unregister` вытесненного.
+        """
+        if _pools.get(self.role) is self._pool:
+            del _pools[self.role]
+
+
+def instrument_pool(pool: Pool, role: str = ROLE_PRIMARY) -> PoolInstrumentation:
+    """Ставит пул под метрики `pg_pool_*` с label `role`; снятие — `unregister()`."""
+    global _meter
+    m = otelkit.meter("pgkit")
+    if _meter is not m:
+        _create_gauges(m)
+        _meter = m
+    _pools[role] = pool
+    return PoolInstrumentation(role, pool)
+
+
+def _observe(stat: str) -> Iterable[Observation]:
+    for role, pool in list(_pools.items()):
+        if pool.is_closing():
+            continue
+        size, idle = pool.get_size(), pool.get_idle_size()
+        value = {
+            "acquired": size - idle,
+            "idle": idle,
+            "total": size,
+            "max": pool.get_max_size(),
+            "min": pool.get_min_size(),
+        }[stat]
+        yield Observation(value, {"role": role})
+
+
+def _create_gauges(m: Meter) -> None:
+    gauges = (
+        ("pg_pool_acquired_conns", "acquired", "Connections currently acquired from pool"),
+        ("pg_pool_idle_conns", "idle", "Idle connections in pool"),
+        ("pg_pool_total_conns", "total", "Total open connections in pool"),
+        ("pg_pool_max_conns", "max", "Configured pool maximum"),
+        ("pg_pool_min_conns", "min", "Configured pool minimum"),
     )
-    meter.create_observable_gauge(
-        "db_pool_idle_conns",
-        callbacks=[_idle],
-        description="Idle connections in pool",
-    )
-    meter.create_observable_gauge(
-        "db_pool_total_conns",
-        callbacks=[_total],
-        description="Total open connections in pool",
-    )
-    meter.create_observable_gauge(
-        "db_pool_max_conns",
-        callbacks=[_max],
-        description="Configured pool maximum",
-    )
-    meter.create_observable_gauge(
-        "db_pool_min_conns",
-        callbacks=[_min],
-        description="Configured pool minimum",
-    )
+    for name, stat, description in gauges:
+        m.create_observable_gauge(
+            name,
+            callbacks=[_callback(stat)],
+            description=description,
+        )
+
+
+def _callback(stat: str) -> Callable[[CallbackOptions], Iterable[Observation]]:
+    def observe(_: CallbackOptions) -> Iterable[Observation]:
+        return _observe(stat)
+
+    return observe

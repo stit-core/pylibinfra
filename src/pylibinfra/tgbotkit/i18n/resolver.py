@@ -1,52 +1,58 @@
-"""LocaleResolver — как выбрать локаль для апдейта. Дефолт FromUserLanguage
-(event.from_user.language_code). FromCachePref читает явное предпочтение из
-cachekit (фича смены языка в шаблоне его пишет). ChainResolver — первый
-непустой. Маппинг/хранение предпочтения — продуктовое, остаётся в шаблоне.
-"""
+"""LocaleResolver — как выбрать локаль апдейта: язык клиента, явный выбор, цепочка."""
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Any, Protocol
 
 from aiogram.types import TelegramObject
 
 from pylibinfra.cachekit import Cache
 
+KEY_PREFIX = "locale:"
+
 
 class LocaleResolver(Protocol):
-    async def resolve(self, event: TelegramObject, data: dict[str, Any]) -> str | None: ...
+    """Порт выбора локали; `None` означает «не знаю», решает следующий в цепочке."""
+
+    async def resolve(self, event: TelegramObject, data: dict[str, Any]) -> str | None:
+        """Локаль для этого апдейта либо `None`."""
 
 
 class FromUserLanguage:
+    """Язык клиента Telegram (`from_user.language_code`) — дефолт кита."""
+
     async def resolve(self, event: TelegramObject, data: dict[str, Any]) -> str | None:
-        user = data.get("event_from_user")
-        code = getattr(user, "language_code", None)
+        """Код языка из апдейта; `None`, если Telegram его не прислал."""
+        code = getattr(data.get("event_from_user"), "language_code", None)
         return code if isinstance(code, str) and code else None
 
 
 class LocalePrefStore:
-    """Хранилище явного выбора локали в cachekit (ключ locale:<user_id>)."""
+    """Явный выбор локали пользователем в `cachekit` (`locale:<user_id>`)."""
 
-    def __init__(self, cache: Cache, ttl: timedelta | None = None) -> None:
+    def __init__(self, cache: Cache, ttl: float = 0.0) -> None:
+        """`ttl` — секунды; `0` (дефолт) хранит выбор без срока."""
         self._cache = cache
         self._ttl = ttl
 
     async def get(self, user_id: int) -> str | None:
-        data, found = await self._cache.get(f"locale:{user_id}")
-        if not found or data is None:
-            return None
-        return data.decode()
+        """Сохранённая локаль пользователя; `None` — выбора нет."""
+        data = await self._cache.get(f"{KEY_PREFIX}{user_id}")
+        return data.decode() if data is not None else None
 
     async def set(self, user_id: int, locale: str) -> None:
-        await self._cache.set(f"locale:{user_id}", locale.encode(), self._ttl)
+        """Запоминает выбор пользователя."""
+        await self._cache.set(f"{KEY_PREFIX}{user_id}", locale.encode(), self._ttl)
 
 
 class FromCachePref:
+    """Явный выбор локали из `LocalePrefStore`; ставят его фичи смены языка в сервисе."""
+
     def __init__(self, store: LocalePrefStore) -> None:
         self._store = store
 
     async def resolve(self, event: TelegramObject, data: dict[str, Any]) -> str | None:
+        """Сохранённая локаль пользователя апдейта; `None` вне пользовательского апдейта."""
         user = data.get("event_from_user")
         if user is None:
             return None
@@ -54,12 +60,15 @@ class FromCachePref:
 
 
 class ChainResolver:
+    """Первый непустой ответ из цепочки резолверов."""
+
     def __init__(self, *resolvers: LocaleResolver) -> None:
         self._resolvers = resolvers
 
     async def resolve(self, event: TelegramObject, data: dict[str, Any]) -> str | None:
-        for r in self._resolvers:
-            locale = await r.resolve(event, data)
+        """Локаль от первого резолвера, который её знает; `None`, если не знает никто."""
+        for resolver in self._resolvers:
+            locale = await resolver.resolve(event, data)
             if locale:
                 return locale
         return None

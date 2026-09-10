@@ -1,53 +1,66 @@
-"""GrpcProvider — dishka-Provider grpckit. Поднимает Server в Scope.APP (start на
-вход, graceful stop на выход контейнера). Опциональные зависимости (Logger,
-servicer'ы, probe'ы) выражены типами-обёртками с пустыми дефолтами: consumer
-override'ит их, регистрируя свой Provider ПОСЛЕ GrpcProvider (последний в
-контейнере побеждает) — тот же приём, что в httpkit.
-
-Provider не provide'ит Config (asymmetry note) — caller регистрирует сам;
-дешёвый mode — new_config().
-"""
+"""GrpcProvider — `Server` с lifecycle в dishka-контейнере."""
 
 from collections.abc import AsyncIterator
 
 from dishka import Provider, Scope, provide
 
-from pylibinfra.logkit import Logger, nop
+from pylibinfra.healthkit import Probes
+from pylibinfra.logkit import Logger
 
+from .auth import Authenticator
 from .config import Config
-from .health import Probe
-from .server import Server, ServicerRegistrar
+from .server import Server, ServiceNames, Services
 
-# Набор регистраторов servicer'ов консьюмера (override'ится App-Provider'ом).
-ServicerBundle = tuple[ServicerRegistrar, ...]
-# Набор readiness-probe'ов (override'ится App-Provider'ом).
-ProbeBundle = tuple[Probe, ...]
+# Опциональные зависимости выражены типами-обёрткой и пустыми дефолтами: консьюмер
+# регистрирует свой Provider ПОСЛЕ GrpcProvider и перекрывает нужный (последний
+# провайдер в контейнере побеждает).
+OptionalAuthenticator = Authenticator | None
 
 
 class GrpcProvider(Provider):
+    """Provider не provide'ит `Config` (asymmetry note) — его регистрирует консьюмер."""
+
     scope = Scope.APP
 
     @provide
-    def default_logger(self) -> Logger:
-        return nop()
-
-    @provide
-    def default_registrars(self) -> ServicerBundle:
+    def default_services(self) -> Services:
+        """Пустой набор регистраторов; консьюмер перекрывает его своим Provider'ом."""
         return ()
 
     @provide
-    def default_probes(self) -> ProbeBundle:
+    def default_service_names(self) -> ServiceNames:
+        """Пустой набор имён для reflection; без них reflection отдаёт только health."""
+        return ServiceNames(())
+
+    @provide
+    def default_probes(self) -> Probes:
+        """Пустой набор health-проб; консьюмер собирает свой кортеж из проб китов."""
         return ()
+
+    @provide
+    def default_authenticator(self) -> OptionalAuthenticator:
+        """Без `Authenticator` в контейнере auth-интерсептор не навешивается."""
+        return None
 
     @provide
     async def server(
         self,
         cfg: Config,
-        logger: Logger,
-        registrars: ServicerBundle,
-        probes: ProbeBundle,
+        log: Logger,
+        services: Services,
+        service_names: ServiceNames,
+        probes: Probes,
+        authenticator: OptionalAuthenticator,
     ) -> AsyncIterator[Server]:
-        srv = Server(cfg, logger, registrars=registrars, probes=probes)
-        await srv.start()
-        yield srv
-        await srv.stop()
+        """Сервер слушает от получения из контейнера до его закрытия."""
+        server = Server(
+            cfg,
+            log,
+            services=services,
+            probes=probes,
+            authenticator=authenticator,
+            service_names=service_names,
+        )
+        await server.serve()
+        yield server
+        await server.stop()
