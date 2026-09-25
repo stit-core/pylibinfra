@@ -37,9 +37,9 @@ def test_env_is_base_layer(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_source_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MY_SECRET", "from-env")
 
-    settings = load(_Settings, _DictSource({"MY_SECRET": "from-vault"}))
+    settings = load(_Settings, _DictSource({"MY_SECRET": "from-source"}))
 
-    assert settings.secret == "from-vault"
+    assert settings.secret == "from-source"
     assert settings.other == "def"
 
 

@@ -11,20 +11,20 @@ from pylibinfra.flagkit import FlagkitProvider, Store
 from pylibinfra.grpckit import Config as GrpcConfig
 
 
-class VaultSource:
-    def __init__(self, secrets: dict[str, str]) -> None:
-        self._secrets = secrets
+class StaticSource:
+    def __init__(self, values: dict[str, str]) -> None:
+        self._values = values
 
     def apply(self, dst: dict[str, object]) -> None:
-        dst.update(self._secrets)
+        dst.update(self._values)
 
 
 class AppProvider(Provider):
     scope = Scope.APP
 
-    def __init__(self, secrets: dict[str, str]) -> None:
+    def __init__(self, values: dict[str, str]) -> None:
         super().__init__()
-        self._sources = (VaultSource(secrets), config.env_prefixed("myapp"))
+        self._sources = (StaticSource(values), config.env_prefixed("myapp"))
 
     @provide
     def grpc_config(self) -> GrpcConfig:

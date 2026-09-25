@@ -12,16 +12,17 @@ W3C-propagator и system-метрики. Корневой obs-кит — без 
   `metrics.set_meter_provider` / `_logs.set_logger_provider`); OTel-`LoggerProvider`
   дополнительно отдаётся в dishka-граф — `LogkitProvider` подхватывает его как
   второй sink.
-- **OTLP/HTTP по спецификации** — `OTEL_EXPORTER_OTLP_ENDPOINT` — базовый URL:
-  схема задаёт TLS, per-signal пути `/v1/traces`, `/v1/metrics`, `/v1/logs`
-  дописываются к нему. Для корп ingest — `Authorization: Bearer <OTEL_TOKEN>` и
-  заголовки из `OTEL_EXPORTER_OTLP_HEADERS`.
+- **OTLP/HTTP по спецификации** — `OTEL_EXPORTER_OTLP_ENDPOINT` — базовый URL
+  коллектора, который выбирает потребитель: схема задаёт TLS, per-signal пути
+  `/v1/traces`, `/v1/metrics`, `/v1/logs` дописываются к нему. Аутентификация у
+  коллектора — `Authorization: Bearer <OTEL_TOKEN>` и/или заголовки из
+  `OTEL_EXPORTER_OTLP_HEADERS`.
 - **Метрики и трейсы — только OTLP.** В stdout они не пишутся; без живого
   коллектора экспорт дропается, а ошибка экспорта уходит в лог (§ Ошибки
   экспорта). stdout-копию логов даёт `logkit`.
 - **Resource-атрибуты** — `service.name`, `service.version`,
-  `deployment.environment.name` из `Config`; `tenant` / `service.namespace` —
-  только при `OTEL_TENANT` (local-dev).
+  `deployment.environment.name` из `Config`; `tenant` и `service.namespace` —
+  только при непустом `OTEL_TENANT`.
 - **System-метрики** — CPU/память/GC/потоки процесса и хоста через
   `SystemMetricsInstrumentor`.
 - **TextMap-propagator** — `TraceContext` + `Baggage`, в том числе при
@@ -109,7 +110,7 @@ providers.shutdown(timeout=30.0)
 | `OTEL_TRACES_BATCH_DELAY` | `trace_batch_delay` | `float`, секунды | `5.0` | период сброса очереди batch-процессора трейсов; `> 0` |
 | `OTEL_METRICS_INTERVAL` | `metric_interval` | `float`, секунды | `10.0` | период экспорта метрик; `> 0` |
 | `OTEL_LOGS_BATCH_DELAY` | `log_batch_delay` | `float`, секунды | `1.0` | период сброса очереди batch-процессора логов; `> 0` |
-| `OTEL_TENANT` | `tenant` | `str` | `""` | local-dev: выставляет `service.namespace` + `tenant`; в проде ставит коллектор — не задавать |
+| `OTEL_TENANT` | `tenant` | `str` | `""` | непустой выставляет resource-атрибуты `service.namespace` и `tenant` (одно значение); пусто — их нет |
 | `OTEL_EXPORTER_OTLP_HEADERS` | `otlp_headers` | `dict[str, str]` | `{}` | заголовки всех трёх экспортёров, формат спецификации `k1=v1,k2=v2` (значения percent-encoded). Имена канонизируются (`authorization` → `Authorization`); невалидное имя → `ConfigError`. В `repr` конфига и текстах ошибок значения не показываются — сломанная запись называется номером |
 | `OTEL_TOKEN` | `otlp_bearer_token` | `SecretStr` | `""` | `Authorization: Bearer <token>` к каждому OTLP-запросу; перекрывает `Authorization` из `OTEL_EXPORTER_OTLP_HEADERS`. В `repr` конфига и текстах ошибок не показывается |
 
@@ -205,11 +206,12 @@ providers.shutdown(timeout=30.0)
 | `service.name` | `OTEL_SERVICE_NAME` | **приложение** |
 | `service.version` | `OTEL_SERVICE_VERSION` | **приложение** |
 | `deployment.environment.name` | `APP_ENV` | **приложение** |
-| `tenant` | — | **корп otel-collector** (из `X-Scope-OrgID`) |
-| `service.namespace` | — | **корп otel-collector** (force-upsert, == `tenant`) |
+| `tenant` | `OTEL_TENANT` | **приложение**, опционально |
+| `service.namespace` | `OTEL_TENANT` (то же значение) | **приложение**, опционально |
 
-`OTEL_TENANT` выставляет `tenant` / `service.namespace` только для local-dev или
-неаутентифицированного коллектора; в проде значение перезатирает коллектор.
+Пустой `OTEL_TENANT` не выставляет ни одного из двух атрибутов. Если их
+проставляет сам коллектор, оставьте переменную пустой — у атрибута должен быть
+один источник.
 
 ## API
 
@@ -248,8 +250,6 @@ uv run pytest tests/telemetry
 
 ## Инварианты и подводные камни
 
-- **Не выставлять `tenant` / `service.namespace` в проде.** Их force-сетит корп
-  otel-collector из `X-Scope-OrgID`.
 - **`OTEL_SERVICE_NAME` обязателен при включённой телеметрии** — `new_config()`
   поднимает `ConfigError`. Без корректных `service.*` /
   `deployment.environment.name` сервис не виден на дашбордах.
@@ -279,6 +279,6 @@ uv run pytest tests/telemetry
 - **Сбой остановки виден на закрытии контейнера.** `shutdown` не глотает ошибки:
   `container.close()` поднимет `ExceptionGroup`. Финализатор `Providers` идёт
   последним (ресурс резолвится первым), поэтому остальные киты уже закрыты.
-- **Правка `telemetry` — breaking для всех сервисов.** Это часть корп
-  obs-контракта: изменение `Config`, resource-attrs или сигналов затрагивает все
-  сервисы и стандартные дашборды.
+- **Правка `telemetry` — breaking для всех сервисов, подключивших кит.** `Config`,
+  resource-атрибуты и набор сигналов — контракт, на который опираются их env,
+  запросы к бэкенду наблюдаемости и дашборды.

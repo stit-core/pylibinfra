@@ -1,6 +1,6 @@
 ---
 name: add-kit
-description: Добавить новый kit (пакет) в pylibinfra по конвенциям библиотеки — package-doc, dishka Provider, pydantic-settings Config с fail-fast валидацией (configkit), observability через _internal/otelkit, healthkit-проба при внешней зависимости, тесты, testkit-сабпакет, README кита (+ docs/ у сложного) и строка-индекс в корневом README и карте CLAUDE.md. Активируй когда юзер говорит "/add-kit", "добавь kit", "новый пакет в pylibinfra", "заведи <name>kit", "нужен переиспользуемый примитив X". Для правки существующего kit'а скилл НЕ нужен — это прямой Edit.
+description: Завести в pylibinfra новый kit по конвенциям библиотеки — package-doc, dishka Provider, Config на configkit.KitSettings с fail-fast валидацией, observability через _internal/otelkit, healthkit-проба при внешней зависимости, тесты, testkit-сабпакет, README кита (+ docs/ у сложного) и строки в корневом README и карте CLAUDE.md. Используй, когда нужен новый переиспользуемый пакет — инфраструктурный примитив, клиент или helper для нескольких сервисов. Правка существующего кита — прямой Edit, без скилла.
 ---
 
 # Skill: add-kit
@@ -41,10 +41,10 @@ description: Добавить новый kit (пакет) в pylibinfra по к�
      тегами образов (никогда `:latest`); тест Provider'а — сборка контейнера с
      минимальным набором провайдеров (аналог `fx.ValidateApp`); метрики/спаны —
      фикстуры `metric_reader`/`read_metric`/`span_exporter` из `tests/conftest.py`.
-3. **Конфиг (если есть env-параметры).** `pydantic_settings.BaseSettings` с
-   `model_config = configkit.settings_config()` и `Field(validation_alias="ENV_NAME")` —
-   это **public API** (имена полей и env-alias'ы). Кросс-полевые инварианты —
-   `@model_validator(mode="after")`; `new_config()` =
+3. **Конфиг (если есть env-параметры).** Наследник `configkit.KitSettings` (ENV читается
+   только по alias'ам, без `.env`) с `model_config = configkit.settings_config()` и
+   `Field(validation_alias="ENV_NAME")` — это **public API** (имена полей и env-alias'ы).
+   Кросс-полевые инварианты — `@model_validator(mode="after")`; `new_config()` =
    `configkit.build(Config, "<kit>", ConfigError)`: невалидный ENV валит старт, а
    не первый запрос. Zero-value конфиг либо безопасен и полезен, либо отвергается.
    Длительности — секунды (`float`), размеры — байты (`int`), секреты — `SecretStr`.
@@ -79,5 +79,5 @@ description: Добавить новый kit (пакет) в pylibinfra по к�
 ## Следующий шаг
 
 После зелёного gate — релиз новой версии через `/release` (consumer'ы подтянут kit
-через `uv add … @vX.Y.Z`; новый кит — добавление, значит minor). Новая сторонняя
+по тегу `vX.Y.Z`; новый кит — добавление, значит minor). Новая сторонняя
 зависимость в `pyproject.toml` — сперва согласуй с пользователем.

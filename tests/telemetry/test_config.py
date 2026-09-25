@@ -157,7 +157,7 @@ def test_token_is_not_shown_in_repr() -> None:
 
 
 def test_headers_are_not_shown_in_repr() -> None:
-    # Authorization корп ingest'а приходит именно этой переменной.
+    # Токен коллектора может прийти и этой переменной, а не только через OTEL_TOKEN.
     cfg = Config(service_name="svc", otlp_headers="authorization=Bearer%20header-secret")
 
     assert "header-secret" not in repr(cfg)

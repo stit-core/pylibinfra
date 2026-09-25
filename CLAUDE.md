@@ -10,7 +10,22 @@ auth, БД, messaging, кэш, аудит, storage, Telegram-бот и т.д. И
 (использование, observability, стабильность API, версионирование) и `README.md`
 каждого кита рядом с кодом (`src/pylibinfra/<kit>/README.md`, у сложных ещё `docs/`).
 Контекстные правила — `.claude/rules/` (path-scoped). Процедуры — `.claude/skills/`.
-План — `.claude/plans/roadmap.md`.
+Планы — `.claude/plans/` (skill `/plan`).
+
+## Место в экосистеме
+
+Экосистема stit — 7 шаблонов `stit-core/*`, которые форкаются в репо клиентской орги
+`<org>/*`, и две библиотеки: `golibinfra` (Go) и эта. pylibinfra не форкается:
+`telegram-bot-template` и его форки `<org>/<bot>` тянут пакет из git по тегу
+(`[tool.uv.sources]`, `rev = "vX.Y.Z"`). Отсюда уходит только тег (`/release`): ревизию и
+миграцию по аннотации тега потребитель делает своей обвязкой, выкатку образа бота —
+`<org>/infra` (`make bump`).
+
+Сюда приходят прямым заходом — сопровождать библиотеку — или с задачей из бота: новую
+инфра-механику (middleware, runner, helper кита) бот оформляет через `/infra-handoff` как PR
+в `pylibinfra`. Работа здесь идёт обвязкой этого репо, гейт — `make check`. Канон карты репо
+и операционного флоу — `docs/reference/ecosystem.md` репо `project-infra-template-compose`
+(в workspace — `../project-infra-template-compose/docs/reference/ecosystem.md`).
 
 ## Точка входа
 
@@ -20,6 +35,8 @@ auth, БД, messaging, кэш, аудит, storage, Telegram-бот и т.д. И
   корневом README и в карте ниже).
 - **Выпустить версию** — skill `/release` (`make gate-clean` → bump `pyproject.toml` →
   аннотированный тег `vX.Y.Z` с release notes → push → гайд апдейта консьюмера).
+- **Содержательное изменение** (breaking в ките, миграция, работа на несколько коммитов) —
+  через план: skill `/plan` (`.claude/plans/<slug>.md`, бэклог — `.claude/plans/backlog.md`).
 - Точечная правка существующего kit'а — прямой Edit; scaffold не нужен.
 
 ## Команды (gate перед claim «готово»)
@@ -63,8 +80,8 @@ make coverage     # покрытие полного прогона; ещё ес�
 - **Служебное:** `_internal/otelkit` (scope `pylibinfra.<kit>`, версия инструментации,
   `meter`/`tracer`, две шкалы бакетов — `DURATION_BUCKETS` и `LONG_DURATION_BUCKETS`,
   `duration_histogram`), `_internal/requestid` (contextvar request-id, общий для
-  транспортов и клиентов), `_internal/configkit` (`settings_config`, `ConfigError`,
-  `build`). Наружу не экспортируются.
+  транспортов и клиентов), `_internal/configkit` (`KitSettings`, `settings_config`,
+  `ConfigError`, `build`). Наружу не экспортируются.
 
 ## Observability-инварианты
 
@@ -101,20 +118,23 @@ make coverage     # покрытие полного прогона; ещё ес�
   их provide'ят владельцы (`LogkitProvider`, `ClockProvider`), иначе порядок регистрации
   молча подменял бы реальный логгер/часы дефолтом. Свои опциональные зависимости кит
   выражает override-ключами `Optional*`/кортежами (`healthkit.Probes`, `timerkit.Jobs`),
-  дефолт которых консьюмер перекрывает провайдером, зарегистрированным ПОСЛЕ.
+  дефолт которых консьюмер перекрывает провайдером, зарегистрированным после (в dishka
+  побеждает последний).
 - **Config провайдит caller.** Provider не читает ENV и не provide'ит `Config`:
   консьюмер регистрирует его сам (App-Provider) либо через `<kit>.new_config()`.
-  Каждый конфиг — `BaseSettings` с `configkit.settings_config()`; кросс-полевые
-  инварианты — `model_validator`; `new_config()` переводит ошибки в `<kit>.ConfigError`
-  без значений полей, поэтому невалидный ENV валит старт, а не первый запрос.
+  Каждый конфиг наследует `configkit.KitSettings` (`settings_config()` + ENV только по
+  alias'ам, без `.env`); кросс-полевые инварианты — `model_validator`; `new_config()`
+  переводит ошибки в `<kit>.ConfigError` без значений полей, поэтому невалидный ENV
+  валит старт, а не первый запрос.
   Zero-value `Config` либо безопасен и полезен, либо отвергается — «молча ломается» нельзя.
 - **Имена полей и `validation_alias` — часть public API.** Менять = breaking: `!` в
   коммите + строка миграции в аннотации тега. Длительности — секунды (`float`),
   размеры — байты, секреты — `SecretStr`.
 - **Docstring на каждом экспорте** (ruff `D100–D106` в гейте): одна строка, по делу;
   package-doc — 1–3 строки: что это и какие сигналы эмитит.
-- **Язык кода — английский:** тексты ошибок и логов, классы исключений `<X>Error`
-  с префиксом кита в сообщении (`"pgkit: …"`, у сабпакета — `"outboxkit/pgstore: …"`).
+- **Язык:** тексты ошибок и логов — английские, классы исключений `<X>Error`
+  с префиксом кита в сообщении (`"pgkit: …"`, у сабпакета — `"outboxkit/pgstore: …"`);
+  комментарии и docstring'и — русские, как в окружающем коде.
 - **async-first.** Весь I/O — asyncio; CPU-тяжёлое — `asyncio.to_thread`; проброс
   tx/request-id/subject — `contextvars`. Каждый исходящий вызов — с таймаутом.
 - **Observability by default.** Новый kit эмитит метрики/спаны через
@@ -137,28 +157,30 @@ make coverage     # покрытие полного прогона; ещё ес�
 ## Границы
 
 ### Делать всегда
-- Перед claim «готово» — `make check` зелёный; перед тегом — `make gate-clean`.
-- Новый kit — через `/add-kit`; собственный `README.md` кита (+ `docs/` у сложного)
-  и строка-индекс в `README.md § Пакеты` обязательны.
+- Перед claim «готово» — `make check` зелёный; перед тегом — `make gate-clean`
+  (§ Команды).
+- Новый kit — через `/add-kit`: без собственного `README.md` кита (+ `docs/` у сложного)
+  и строки-индекса в `README.md § Пакеты` потребитель его не найдёт.
 - Тронул конфиг / эмитимые метрики / labels / span-attrs — обнови `README.md`
   (+ `docs/`) соответствующего кита (§ Конфигурация / § Observability) и, если
-  переменная — endpoint, строку в `README.md § Per-concern endpoints`;
-  `make envdoc-check` сверяет обе стороны.
+  переменная — endpoint, строку в `README.md § Per-concern endpoints`:
+  `make envdoc-check` сверяет обе стороны и падает на расхождении.
 - Каждый багфикс — с регрессионным тестом; у `Provider` кита — тест сборки контейнера
   с минимальным набором провайдеров.
 
-### Сначала спросить
-- Менять конвенцию имён метрик (`bizmetric`, `biz_*`) — затрагивает все сервисы.
-- Добавлять новую зависимость в `pyproject.toml`.
-- Удалять кит или менять его границы.
+### Сначала спросить пользователя
+- Смена конвенции имён метрик (`bizmetric`, `biz_*`) — на неё опираются все сервисы.
+- Новая зависимость в `pyproject.toml` — она уезжает в граф каждого потребителя.
+- Удаление кита или смена его границ — breaking для потребителей.
 
-### Не делать никогда
-- `:latest` в примерах и тестах. `print()` / `logging.getLogger()`
-  напрямую в production-коде — только `logkit.Logger`.
-- Коммитить product-specific логику — pylibinfra общая lib; доменное живёт в
-  сервис-репо.
-- Клиент без таймаута; `datetime.now()`/`asyncio.sleep()` в ките, чьё поведение зависит
-  от времени, — только через `clockkit.Clock`.
+### Не делать
+- `:latest` в примерах и тестах: тег плавает, и тест перестаёт быть воспроизводимым.
+- `print()` / `logging.getLogger()` напрямую в production-коде: лог идёт только через
+  `logkit.Logger`, иначе теряет redact, request-/trace-id и OTel-sink.
+- Product-specific логика: pylibinfra — общая lib, доменное живёт в сервис-репо.
+- Клиент без таймаута — зависший вызов держит задачу. `datetime.now()`/`asyncio.sleep()`
+  в ките, чьё поведение зависит от времени, — только через `clockkit.Clock`, иначе это
+  поведение не проверить фейковыми часами.
 
 ## Forward-only
 

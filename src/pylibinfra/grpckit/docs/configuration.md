@@ -66,7 +66,7 @@ grpc-go-сервер такое соединение пингует — дефо
 
 TLS навешивается, когда заданы **оба** `GRPC_TLS_CERT_FILE` и
 `GRPC_TLS_KEY_FILE`; нечитаемый файл — `ConfigError: grpckit: tls creds: …` при
-`listen()`. В корп-топологии TLS обычно терминируется на mesh/ingress, а сервис
+`listen()`. Когда TLS терминирует ingress/прокси перед сервисом, сам сервис
 слушает plaintext — это дефолтный режим. mTLS и нестандартные параметры — через
 `server_options=(("grpc.ssl_client_certificate_request_type", ...),)` или свой
 `grpc.aio.server` поверх `Server.grpc()`.

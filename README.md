@@ -24,11 +24,15 @@ from pylibinfra import healthkit, httpkit, pgkit, testkit
 
 ## Где это в экосистеме
 
-`pylibinfra` — общая Python-lib экосистемы stit, симметричная `golibinfra` для
-Go-сервисов. Её импортируют
-[`telegram-bot-template`](https://git.stit.tech/stit-core/telegram-bot-template) и
-Python-сервисы на FastAPI/gRPC. Карта всех репо — на
-[витрине stit](https://git.stit.tech/stit-core/stit-public).
+`pylibinfra` — общая Python-lib экосистемы stit (7 форкаемых шаблонов + 2 общие
+библиотеки: эта и `golibinfra` для Go-сервисов). Её импортирует
+[`telegram-bot-template`](https://git.stit.tech/stit-core/telegram-bot-template)
+(форк `<org>/<bot>`); `httpkit` и `grpckit` рассчитаны и на Python-сервисы на
+FastAPI/gRPC. Библиотека не форкается: потребители тянут пакет из git по тегу, а
+выкатка их образов идёт из `<org>/infra`. Карта репо и операционный флоу —
+[`docs/reference/ecosystem.md`](https://git.stit.tech/stit-core/project-infra-template-compose/src/branch/main/docs/reference/ecosystem.md)
+в `project-infra-template-compose`; витрина всех репо —
+[stit-public](https://git.stit.tech/stit-core/stit-public).
 
 ## Доступ к репозиторию
 
@@ -306,8 +310,7 @@ minor-релизе. Каждое такое изменение помечает�
 
 ## Версионирование
 
-Семвер по форме (`vX.Y.Z`, поле `version` в `pyproject.toml` + git-тег), политика —
-по решению оператора:
+Семвер по форме (`vX.Y.Z`, поле `version` в `pyproject.toml` + git-тег), политика:
 
 - **minor** — новая функциональность и breaking-изменения; каждое breaking
   названо в аннотации тега (`Breaking` по китам: что изменилось → как мигрировать);

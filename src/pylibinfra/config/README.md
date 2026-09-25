@@ -3,7 +3,7 @@
 Загрузчик конфигов приложения: модель pydantic-settings заполняется ENV-слоем и
 источниками-override'ами (`Source`) поверх него. Нужен там, где приложению мало
 голого окружения: единый порядок приоритета, приставка окружения на инстанс и
-возможность добавить свой источник (секрет-стор, файл, remote) без правки китов.
+возможность добавить свой источник (файл, remote) без правки китов.
 
 ## Граница
 
@@ -33,22 +33,22 @@ from pylibinfra.flagkit import Config as FlagConfig, FlagkitProvider
 from pylibinfra.grpckit import Config as GrpcConfig
 
 
-class VaultSource:
-    """Свой источник: кладёт значения под env-именами полей модели."""
+class StaticSource:
+    """Свой источник: кладёт заданные значения под env-именами полей модели."""
 
-    def __init__(self, secrets: dict[str, str]) -> None:
-        self._secrets = secrets
+    def __init__(self, values: dict[str, str]) -> None:
+        self._values = values
 
     def apply(self, dst: dict[str, object]) -> None:
-        dst.update(self._secrets)
+        dst.update(self._values)
 
 
 class AppProvider(Provider):
     scope = Scope.APP
 
-    def __init__(self, secrets: dict[str, str]) -> None:
+    def __init__(self, values: dict[str, str]) -> None:
         super().__init__()
-        self._sources = (VaultSource(secrets), config.env_prefixed("myapp"))
+        self._sources = (StaticSource(values), config.env_prefixed("myapp"))
 
     @provide
     def grpc_config(self) -> GrpcConfig:
@@ -59,7 +59,7 @@ class AppProvider(Provider):
         return config.load(FlagConfig, *self._sources)
 
 
-container = make_async_container(FlagkitProvider(), AppProvider(secrets))
+container = make_async_container(FlagkitProvider(), AppProvider({"GRPC_SHUTDOWN_GRACE": "3"}))
 ```
 
 Порядок аргументов = порядок приоритета: поздний источник перезатирает ранний, а

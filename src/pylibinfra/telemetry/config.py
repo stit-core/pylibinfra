@@ -95,10 +95,10 @@ class Config(KitSettings):
     metric_interval: float = Field(default=10.0, gt=0, validation_alias="OTEL_METRICS_INTERVAL")
     log_batch_delay: float = Field(default=1.0, gt=0, validation_alias="OTEL_LOGS_BATCH_DELAY")
 
-    # Только local-dev: в проде service.namespace и tenant ставит коллектор.
+    # Непустой tenant выставляет resource-атрибуты service.namespace и tenant.
     tenant: str = Field(default="", validation_alias="OTEL_TENANT")
 
-    # repr=False: в заголовках корп ingest'а лежит Authorization с токеном.
+    # repr=False: в заголовках бывает Authorization с токеном коллектора.
     otlp_headers: Annotated[dict[str, str], NoDecode] = Field(
         default_factory=dict, validation_alias="OTEL_EXPORTER_OTLP_HEADERS", repr=False
     )
