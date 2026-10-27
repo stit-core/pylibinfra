@@ -8,15 +8,17 @@
 auth, БД, messaging, кэш, аудит, storage, Telegram-бот. Каждый kit —
 `dishka.Provider`, инструментирован OTel, подключается независимо. Импортируется
 как Python-пакет из бизнес-репозиториев. Структурный аналог
-[`golibinfra`](https://git.stit.tech/stit-core/golibinfra) для Python-стека:
+[`golibinfra`](https://github.com/stit-core/golibinfra) для Python-стека:
 те же имена китов, ENV-переменные и метрики.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563eb)](LICENSE)
-[![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/stit-public)
+[![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://github.com/stit-core)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB)](#использование-в-проекте)
 [![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#observability)
 
 </div>
+
+> Разработка идёт в приватном Gitea (`git.stit.tech/stit-core/pylibinfra`), публичное зеркало — [github.com/stit-core/pylibinfra](https://github.com/stit-core/pylibinfra). Как с ним работать вне инфраструктуры stit — в [профиле stit-core](https://github.com/stit-core).
 
 ```python
 from pylibinfra import healthkit, httpkit, pgkit, testkit
@@ -26,13 +28,13 @@ from pylibinfra import healthkit, httpkit, pgkit, testkit
 
 `pylibinfra` — общая Python-lib экосистемы stit (7 форкаемых шаблонов + 2 общие
 библиотеки: эта и `golibinfra` для Go-сервисов). Её импортирует
-[`telegram-bot-template`](https://git.stit.tech/stit-core/telegram-bot-template)
+[`telegram-bot-template`](https://github.com/stit-core/telegram-bot-template)
 (форк `<org>/<bot>`); `httpkit` и `grpckit` рассчитаны и на Python-сервисы на
 FastAPI/gRPC. Библиотека не форкается: потребители тянут пакет из git по тегу, а
 выкатка их образов идёт из `<org>/infra`. Карта репо и операционный флоу —
-[`docs/reference/ecosystem.md`](https://git.stit.tech/stit-core/project-infra-template-compose/src/branch/main/docs/reference/ecosystem.md)
+[`docs/reference/ecosystem.md`](https://github.com/stit-core/project-infra-template-compose/blob/main/docs/reference/ecosystem.md)
 в `project-infra-template-compose`; витрина всех репо —
-[stit-public](https://git.stit.tech/stit-core/stit-public).
+[stit-core](https://github.com/stit-core).
 
 ## Доступ к репозиторию
 
@@ -350,7 +352,7 @@ uv add --editable ../pylibinfra
 ## Часть экосистемы stit
 
 Одна из открытых библиотек stit (Apache-2.0). Карта всех шаблонов и точка входа —
-**[витрина stit](https://git.stit.tech/stit-core/stit-public)**.
+**[витрина stit](https://github.com/stit-core)**.
 
 ## Лицензия
 

@@ -73,7 +73,7 @@ grpckit = [
 
 [project.urls]
 Homepage = "https://git.stit.tech/stit-core/pylibinfra"
-Showcase = "https://git.stit.tech/stit-core/stit-public"
+Showcase = "https://github.com/stit-core"
 
 [dependency-groups]
 dev = [
